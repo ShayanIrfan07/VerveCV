@@ -183,7 +183,6 @@ describe("check-size production dependency and source accounting", () => {
       },
     });
 
-    // Shared package linked into both workspaces: must be counted once
     const sharedStoreDir = path.join(
       rootDir,
       "node_modules",
@@ -200,7 +199,11 @@ describe("check-size production dependency and source accounting", () => {
         version: "1.0.0",
         peerDependencies: {
           "peer-dep": "^1.0.0",
+          "@electric-sql/pglite": "^0.5.0",
           typescript: "^5.0.0",
+        },
+        peerDependenciesMeta: {
+          "@electric-sql/pglite": { optional: true },
         },
       },
     );
@@ -210,7 +213,6 @@ describe("check-size production dependency and source accounting", () => {
       1200,
     );
 
-    // Peer dependency provided inside the pnpm virtual-store group: must be counted
     const peerStoreDir = path.join(
       rootDir,
       "node_modules",
@@ -241,14 +243,44 @@ describe("check-size production dependency and source accounting", () => {
       ),
     );
 
-    // Root devDependency typescript: must NOT be pulled in by optional peer lookup
+    const optionalDevPeerStoreDir = path.join(
+      rootDir,
+      "node_modules",
+      ".pnpm",
+      "@electric-sql+pglite@0.5.16",
+      "node_modules",
+      "@electric-sql",
+      "pglite",
+    );
+    writeJson(
+      rootDir,
+      "node_modules/.pnpm/@electric-sql+pglite@0.5.16/node_modules/@electric-sql/pglite/package.json",
+      { name: "@electric-sql/pglite", version: "0.5.16" },
+    );
+    writeSizedFile(
+      rootDir,
+      "node_modules/.pnpm/@electric-sql+pglite@0.5.16/node_modules/@electric-sql/pglite/pglite.wasm",
+      250_000,
+    );
+    linkDirectory(
+      optionalDevPeerStoreDir,
+      path.join(
+        rootDir,
+        "node_modules",
+        ".pnpm",
+        "shared-core@1.0.0_peer-dep@1.0.0",
+        "node_modules",
+        "@electric-sql",
+        "pglite",
+      ),
+    );
+
     writeJson(rootDir, "node_modules/typescript/package.json", {
       name: "typescript",
       version: "5.9.3",
     });
     writeSizedFile(rootDir, "node_modules/typescript/tsc.js", 90_000);
 
-    // Hasher with one installed platform optional binary and one uninstalled OS optional binary
     const hasherStoreDir = path.join(
       rootDir,
       "node_modules",

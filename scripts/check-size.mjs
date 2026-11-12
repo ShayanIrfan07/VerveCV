@@ -157,7 +157,11 @@ export function measureProductionDependencies(rootDir) {
     }
 
     const peerDeps = asStringRecord(manifest.peerDependencies);
+    const peerMeta = asObjectRecord(manifest.peerDependenciesMeta);
     for (const [depName, specifier] of Object.entries(peerDeps)) {
+      if (isOptionalPeer(peerMeta[depName])) {
+        continue;
+      }
       const child = resolveOptionalDependency(
         realTargetDir,
         depName,
@@ -657,6 +661,23 @@ function asStringRecord(value) {
     }
   }
   return output;
+}
+
+function asObjectRecord(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return value;
+}
+
+function isOptionalPeer(metaEntry) {
+  return (
+    metaEntry !== null &&
+    typeof metaEntry === "object" &&
+    !Array.isArray(metaEntry) &&
+    "optional" in metaEntry &&
+    metaEntry.optional === true
+  );
 }
 
 function tryLstat(targetPath) {

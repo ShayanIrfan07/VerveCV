@@ -214,7 +214,7 @@ Error body, used for every error response:
 | POST | `/auth/register` | Create a user |
 | POST | `/auth/login` | Create a session |
 | POST | `/auth/refresh` | Rotate the refresh token |
-| POST | `/auth/logout` | Revoke the session |
+| POST | `/auth/logout` | Revoke the caller’s session family (single-device lineage; distinct from account-wide logout-all-devices) |
 | GET | `/me` | Current user |
 | POST | `/resumes/upload-intents` | Reserve a version and a signed upload |
 | POST | `/resumes/:resumeId/versions/:versionId/complete-upload` | Verify the stored object |

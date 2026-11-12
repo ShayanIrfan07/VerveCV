@@ -9,11 +9,17 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.5",
+    "@node-rs/argon2": "^2.2.2",
     "@vervecv/contracts": "workspace:*",
-    "fastify": "^5.6.2"
+    "drizzle-orm": "^0.45.4",
+    "fastify": "^5.6.2",
+    "postgres": "^4.1.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "@types/node": "^24.10.1",
+    "drizzle-kit": "^0.31.11",
     "tsx": "^4.20.6",
     "vitest": "^4.0.8"
   }
