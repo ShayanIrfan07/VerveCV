@@ -1,0 +1,62 @@
+import { randomUUID } from "node:crypto";
+import type { ErrorEnvelope, HealthLiveResponse } from "@vervecv/contracts";
+import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
+import type { AppConfig } from "./config.js";
+
+const REDACT_PATHS = [
+  "req.headers.authorization",
+  "req.headers.cookie",
+  "req.body.password",
+  "req.body.token",
+  "req.body.refreshToken",
+];
+
+export function buildApp(config: Pick<AppConfig, "databaseUrl" | "logger">): FastifyInstance {
+  const app = Fastify({
+    logger: config.logger ? { redact: REDACT_PATHS } : false,
+    requestIdHeader: "x-request-id",
+    genReqId: (request) => {
+      const header = request.headers["x-request-id"];
+      return typeof header === "string" && header.length > 0 ? header : randomUUID();
+    },
+  });
+
+  app.setNotFoundHandler((request, reply) => {
+    reply.status(404).send(errorBody("NOT_FOUND", "Not found", request.id));
+  });
+
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const statusCode = error.statusCode && error.statusCode >= 400 ? error.statusCode : 500;
+    const code = statusCode >= 500 ? "INTERNAL_ERROR" : "REQUEST_ERROR";
+    const message = statusCode >= 500 ? "Internal error" : error.message;
+    request.log.error({ err: error }, "request failed");
+    reply.status(statusCode).send(errorBody(code, message, request.id));
+  });
+
+  app.get("/api/v1/health/live", (): HealthLiveResponse => {
+    return { status: "live" };
+  });
+
+  app.get("/api/v1/health/ready", (request, reply) => {
+    if (config.databaseUrl === null) {
+      return reply
+        .status(503)
+        .send(errorBody("DATABASE_NOT_CONFIGURED", "Database is not configured", request.id));
+    }
+    return reply
+      .status(503)
+      .send(
+        errorBody(
+          "DATABASE_CHECK_NOT_IMPLEMENTED",
+          "Database connectivity check is not implemented",
+          request.id,
+        ),
+      );
+  });
+
+  return app;
+}
+
+function errorBody(code: string, message: string, requestId: string): ErrorEnvelope {
+  return { error: { code, message, requestId } };
+}
