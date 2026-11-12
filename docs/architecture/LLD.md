@@ -122,13 +122,33 @@ interface EvaluationFinding {
   status: "active" | "ignored" | "resolved";
 }
 
-interface RuleResult {
+type RuleWithholdReasonCode =
+  | "RULE_UNSPECIFIED"
+  | "OPEN_DECISION"
+  | "DICTIONARY_UNAVAILABLE"
+  | "MISSING_CANDIDATE_TYPE"
+  | "NO_APPLICABLE_ENTRIES"
+  | "UNRESOLVED_BAND";
+
+interface RuleResultBase {
   ruleId: string;
-  score: number;
   maxScore: number;
   findings: EvaluationFinding[];
   version: string;
 }
+
+interface ScoredRuleResult extends RuleResultBase {
+  status: "scored";
+  score: number;
+}
+
+interface WithheldRuleResult extends RuleResultBase {
+  status: "withheld";
+  score: null;
+  reasonCode: RuleWithholdReasonCode;
+}
+
+type RuleResult = ScoredRuleResult | WithheldRuleResult;
 ```
 
 `ResumeSection` and `BoundingBox` are structural types required to carry the rubric’s sections and the brief’s coordinates. They do not add scoring rules.
@@ -155,7 +175,7 @@ Identical document, options, rubric version, and parser version produce identica
 
 Suggested rubric version string until the open decisions are closed: `rubric-2026-11-12-provisional`. Any change to a weight, band, penalty, or dictionary that changes a score requires a new version string.
 
-Rules that hit an unresolved case return a withheld result (`score: null`, with a reason code) rather than a guessed number. The aggregator excludes withheld maxima from the displayed denominator and sets `score_status` to `PROVISIONAL`.
+Rules that hit an unresolved case return a withheld result (`status: "withheld"`, `score: null`, and a `reasonCode` from `RuleWithholdReasonCode`) rather than a guessed number. Scored rules return `status: "scored"` with a numeric `score` in `0..maxScore`. The aggregator excludes withheld maxima from the displayed denominator and sets `score_status` to `PROVISIONAL`.
 
 ## 5. Module boundaries
 
