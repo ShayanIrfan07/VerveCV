@@ -285,6 +285,7 @@ describe("authentication", () => {
     expect(rotatedA.statusCode).toBe(200);
     const deviceARefresh2 = rotatedA.cookies.find((cookie) => cookie.name === "vervecv_refresh");
 
+    // Replay old Device A token -> revokes Device A family
     const reuse = await app.inject({
       method: "POST",
       url: "/api/v1/auth/refresh",
