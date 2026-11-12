@@ -32,7 +32,12 @@ export function setSessionCookies(
 }
 
 export function clearSessionCookies(reply: FastifyReply, secureCookies: boolean): void {
-  const base = { path: "/api/v1", secure: secureCookies, sameSite: "lax" as const };
+  const base = {
+    httpOnly: true,
+    secure: secureCookies,
+    sameSite: "lax" as const,
+    path: "/api/v1",
+  };
   reply.clearCookie(SESSION_COOKIE, base);
   reply.clearCookie(REFRESH_COOKIE, { ...base, path: "/api/v1/auth" });
 }

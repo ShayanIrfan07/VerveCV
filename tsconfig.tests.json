@@ -4,5 +4,11 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["apps/api/src/**/*.ts", "packages/contracts/src/**/*.ts", "packages/evaluation/src/**/*.ts"]
+  "include": [
+    "apps/api/src/**/*.ts",
+    "packages/contracts/src/**/*.ts",
+    "packages/evaluation/src/**/*.ts",
+    "scripts/**/*.ts",
+    "scripts/**/*.d.mts"
+  ]
 }

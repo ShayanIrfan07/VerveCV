@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "typecheck": "tsc -b --pretty false && tsc -b apps/web --pretty false && tsc -p tsconfig.tests.json --pretty false",
     "test": "vitest run",
+    "db:check": "corepack pnpm --filter @vervecv/api exec drizzle-kit check --config ../../drizzle.config.ts",
     "build": "tsc -b --pretty false && corepack pnpm --filter @vervecv/web build",
     "size:check": "node scripts/check-size.mjs"
   },

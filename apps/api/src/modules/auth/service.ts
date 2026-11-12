@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Database } from "../../infrastructure/db/client.js";
 import { auditEvents, plans, sessions, subscriptions, usageCounters, users } from "../../infrastructure/db/schema.js";
 import { hashPassword, verifyPassword } from "./passwords.js";
@@ -29,6 +29,8 @@ export interface SessionTokens {
   refreshToken: string;
   expiresAt: Date;
 }
+
+type DbExecutor = Pick<Database, "select" | "insert" | "update">;
 
 let dummyPasswordHash: Promise<string> | null = null;
 
@@ -116,13 +118,17 @@ export async function loginUser(
     throw new AuthError(401, "INVALID_CREDENTIALS", "Invalid email or password");
   }
 
-  const tokens = await createSession(db, user.id, sessionTtlSeconds, null);
-  await db.insert(auditEvents).values({
-    userId: user.id,
-    eventType: "user.logged_in",
-    targetId: user.id,
-    safeMetadata: {},
+  const tokens = await db.transaction(async (tx) => {
+    const created = await createSession(tx, user.id, sessionTtlSeconds, null);
+    await tx.insert(auditEvents).values({
+      userId: user.id,
+      eventType: "user.logged_in",
+      targetId: user.id,
+      safeMetadata: {},
+    });
+    return created;
   });
+
   return {
     user: { id: user.id, email: user.email, displayName: user.displayName },
     tokens,
@@ -135,28 +141,159 @@ export async function refreshSession(
   sessionTtlSeconds: number,
 ): Promise<SessionTokens> {
   const tokenHash = hashRefreshToken(refreshToken);
-  const found = await db.select().from(sessions).where(eq(sessions.refreshTokenHash, tokenHash)).limit(1);
-  const current = found[0];
-  if (!current) {
-    throw new AuthError(401, "UNAUTHORIZED", "Unauthorized");
-  }
-  if (current.revokedAt) {
-    await revokeSessionFamily(db, current.userId, current.id);
+  const now = new Date();
+
+  const outcome = await db.transaction(async (tx) => {
+    const found = await tx
+      .select()
+      .from(sessions)
+      .where(eq(sessions.refreshTokenHash, tokenHash))
+      .for("update")
+      .limit(1);
+    const current = found[0];
+    if (!current) {
+      return { kind: "unauthorized" as const };
+    }
+
+    // Lock the user's session rows so concurrent refresh/logout operations on the
+    // same family serialize cleanly and cannot create an unrevoked child session.
+    await tx
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(eq(sessions.userId, current.userId))
+      .for("update");
+
+    // Re-read current session state after acquiring family locks.
+    const lockedCurrentRows = await tx
+      .select()
+      .from(sessions)
+      .where(eq(sessions.id, current.id))
+      .limit(1);
+    const lockedCurrent = lockedCurrentRows[0];
+    if (!lockedCurrent) {
+      return { kind: "unauthorized" as const };
+    }
+
+    if (lockedCurrent.revokedAt) {
+      await revokeSessionFamily(tx, lockedCurrent.userId, lockedCurrent.id, now);
+      return { kind: "reuse" as const };
+    }
+
+    if (lockedCurrent.expiresAt.getTime() <= now.getTime()) {
+      return { kind: "unauthorized" as const };
+    }
+
+    // Conditional atomic claim: only succeeds if the row is still unrevoked.
+    const claimed = await tx
+      .update(sessions)
+      .set({ revokedAt: now })
+      .where(and(eq(sessions.id, lockedCurrent.id), isNull(sessions.revokedAt)))
+      .returning({ id: sessions.id });
+
+    if (claimed.length === 0) {
+      await revokeSessionFamily(tx, lockedCurrent.userId, lockedCurrent.id, now);
+      return { kind: "reuse" as const };
+    }
+
+    const tokens = await createSession(tx, lockedCurrent.userId, sessionTtlSeconds, lockedCurrent.id, now);
+    return { kind: "rotated" as const, tokens };
+  });
+
+  if (outcome.kind === "reuse") {
     throw new AuthError(401, "REFRESH_REUSE", "Unauthorized");
   }
-  if (current.expiresAt.getTime() <= Date.now()) {
+  if (outcome.kind === "unauthorized") {
     throw new AuthError(401, "UNAUTHORIZED", "Unauthorized");
   }
-
-  await db.update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, current.id));
-  return createSession(db, current.userId, sessionTtlSeconds, current.id);
+  return outcome.tokens;
 }
 
-export async function logoutSession(db: Database, sessionId: string): Promise<void> {
-  await db.update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, sessionId));
+export async function logoutSession(
+  db: Database,
+  credentials: { sessionId?: string | null; refreshToken?: string | null },
+): Promise<void> {
+  const sessionId = credentials.sessionId ?? null;
+  const refreshToken = credentials.refreshToken ?? null;
+  if (!sessionId && !refreshToken) {
+    return;
+  }
+
+  const refreshHash = refreshToken ? hashRefreshToken(refreshToken) : null;
+  const now = new Date();
+
+  await db.transaction(async (tx) => {
+    const targetIds = new Set<string>();
+    const userIds = new Set<string>();
+
+    if (sessionId && isUuidLike(sessionId)) {
+      const bySession = await tx
+        .select({ id: sessions.id, userId: sessions.userId })
+        .from(sessions)
+        .where(eq(sessions.id, sessionId))
+        .for("update")
+        .limit(1);
+      const found = bySession[0];
+      if (found) {
+        targetIds.add(found.id);
+        userIds.add(found.userId);
+      }
+    }
+
+    if (refreshHash) {
+      const byRefresh = await tx
+        .select({ id: sessions.id, userId: sessions.userId })
+        .from(sessions)
+        .where(eq(sessions.refreshTokenHash, refreshHash))
+        .for("update")
+        .limit(1);
+      const found = byRefresh[0];
+      if (found) {
+        targetIds.add(found.id);
+        userIds.add(found.userId);
+      }
+    }
+
+    if (targetIds.size === 0) {
+      return;
+    }
+
+    for (const userId of userIds) {
+      // Lock all sessions of this user to serialize against concurrent refresh rotations
+      // on the same device lineage while leaving unrelated device families untouched.
+      await tx
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(eq(sessions.userId, userId))
+        .for("update");
+    }
+
+    for (const startId of targetIds) {
+      const ownerRows = await tx
+        .select({ userId: sessions.userId })
+        .from(sessions)
+        .where(eq(sessions.id, startId))
+        .limit(1);
+      const owner = ownerRows[0];
+      if (owner) {
+        await revokeSessionFamily(tx, owner.userId, startId, now);
+      }
+    }
+
+    for (const userId of userIds) {
+      await tx.insert(auditEvents).values({
+        userId,
+        eventType: "user.logged_out",
+        targetId: [...targetIds][0] ?? null,
+        safeMetadata: {},
+      });
+    }
+  });
 }
 
 export async function readSessionUser(db: Database, sessionId: string): Promise<PublicUser | null> {
+  if (!isUuidLike(sessionId)) {
+    return null;
+  }
   const found = await db
     .select({
       id: users.id,
@@ -197,14 +334,15 @@ export async function readUsage(db: Database, userId: string) {
 }
 
 async function createSession(
-  db: Database,
+  tx: DbExecutor,
   userId: string,
   sessionTtlSeconds: number,
   rotatedFromId: string | null,
+  now = new Date(),
 ): Promise<SessionTokens> {
   const refreshToken = randomBytes(32).toString("base64url");
-  const expiresAt = new Date(Date.now() + sessionTtlSeconds * 1000);
-  const inserted = await db
+  const expiresAt = new Date(now.getTime() + sessionTtlSeconds * 1000);
+  const inserted = await tx
     .insert(sessions)
     .values({
       userId,
@@ -220,9 +358,18 @@ async function createSession(
   return { sessionId: session.id, refreshToken, expiresAt };
 }
 
-async function revokeSessionFamily(db: Database, userId: string, startId: string): Promise<void> {
-  const rows = await db
-    .select({ id: sessions.id, rotatedFromId: sessions.rotatedFromId })
+async function revokeSessionFamily(
+  tx: DbExecutor,
+  userId: string,
+  startId: string,
+  now = new Date(),
+): Promise<void> {
+  const rows = await tx
+    .select({
+      id: sessions.id,
+      rotatedFromId: sessions.rotatedFromId,
+      revokedAt: sessions.revokedAt,
+    })
     .from(sessions)
     .where(eq(sessions.userId, userId));
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -240,10 +387,20 @@ async function revokeSessionFamily(db: Database, userId: string, startId: string
     return current?.id ?? id;
   };
   const root = rootOf(startId);
-  const memberIds = rows.filter((row) => rootOf(row.id) === root).map((row) => row.id);
-  for (const id of memberIds) {
-    await db.update(sessions).set({ revokedAt: new Date() }).where(eq(sessions.id, id));
+  const unrevokedMemberIds = rows
+    .filter((row) => rootOf(row.id) === root && row.revokedAt === null)
+    .map((row) => row.id);
+
+  if (unrevokedMemberIds.length > 0) {
+    await tx
+      .update(sessions)
+      .set({ revokedAt: now })
+      .where(and(inArray(sessions.id, unrevokedMemberIds), isNull(sessions.revokedAt)));
   }
+}
+
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
 function hashRefreshToken(token: string): string {

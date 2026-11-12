@@ -39,7 +39,7 @@ A second user’s identifier in a URL is an insecure direct object reference. Ev
 | Token placement | Cookies only; not `localStorage` or `sessionStorage` |
 | Refresh | Rotate on use; store the new hash; keep `rotated_from_id` |
 | Reuse detection | Presentation of a rotated refresh token revokes the token family |
-| Logout | Sets `revoked_at` |
+| Logout | Revokes the caller’s session and its rotated refresh-token lineage (`rotated_from_id` family) without revoking unrelated device sessions; logout-all-devices is a separate account-wide revocation (`WHERE user_id = $1`) |
 | Email | Stored normalized and unique |
 
 Argon2id parameters must meet the OWASP Password Storage Cheat Sheet that is current when Phase 2 is implemented. This document does not freeze a memory or iteration number ahead of that check.

@@ -1,0 +1,134 @@
+{
+  "pnpmWorkspaceYaml": "packages:\n  - \"apps/*\"\n  - \"packages/*\"\n",
+  "trackedFiles": [
+    "package.json",
+    "pnpm-workspace.yaml",
+    "apps/api/package.json",
+    "apps/api/src/index.ts",
+    "apps/api/dist/bundle.js",
+    "packages/shared/package.json",
+    "packages/shared/src/index.ts",
+    "fixtures/sample-resume.txt"
+  ],
+  "files": {
+    "package.json": {
+      "json": {
+        "name": "fixture-monorepo",
+        "private": true,
+        "type": "module",
+        "devDependencies": {
+          "dev-only-linter": "1.0.0",
+          "pkg-shared-runtime": "1.2.0"
+        }
+      }
+    },
+    "apps/api/package.json": {
+      "json": {
+        "name": "@fixture/api",
+        "version": "0.0.0",
+        "private": true,
+        "dependencies": {
+          "@fixture/shared": "workspace:*",
+          "pkg-alpha": "1.0.0"
+        },
+        "devDependencies": {
+          "dev-only-linter": "1.0.0"
+        }
+      }
+    },
+    "apps/api/src/index.ts": {
+      "text": "export const ready = true;\n"
+    },
+    "apps/api/dist/bundle.js": {
+      "size": 4096
+    },
+    "packages/shared/package.json": {
+      "json": {
+        "name": "@fixture/shared",
+        "version": "0.0.0",
+        "private": true,
+        "dependencies": {
+          "pkg-shared-runtime": "1.2.0"
+        },
+        "devDependencies": {
+          "dev-test-runner": "3.0.0"
+        }
+      }
+    },
+    "packages/shared/src/index.ts": {
+      "text": "export const shared = 1;\n"
+    },
+    "fixtures/sample-resume.txt": {
+      "size": 8192
+    },
+    "node_modules/pkg-alpha/package.json": {
+      "json": {
+        "name": "pkg-alpha",
+        "version": "1.0.0",
+        "dependencies": {
+          "pkg-nested-beta": "2.0.0"
+        }
+      }
+    },
+    "node_modules/pkg-alpha/index.js": {
+      "size": 500
+    },
+    "node_modules/pkg-alpha/node_modules/pkg-nested-beta/package.json": {
+      "json": {
+        "name": "pkg-nested-beta",
+        "version": "2.0.0",
+        "dependencies": {
+          "pkg-deep-gamma": "3.1.0"
+        }
+      }
+    },
+    "node_modules/pkg-alpha/node_modules/pkg-nested-beta/index.js": {
+      "size": 300
+    },
+    "node_modules/pkg-alpha/node_modules/pkg-nested-beta/node_modules/pkg-deep-gamma/package.json": {
+      "json": {
+        "name": "pkg-deep-gamma",
+        "version": "3.1.0"
+      }
+    },
+    "node_modules/pkg-alpha/node_modules/pkg-nested-beta/node_modules/pkg-deep-gamma/index.js": {
+      "size": 200
+    },
+    "node_modules/pkg-alpha/node_modules/pkg-bundled-helper/package.json": {
+      "json": {
+        "name": "pkg-bundled-helper",
+        "version": "0.4.0"
+      }
+    },
+    "node_modules/pkg-alpha/node_modules/pkg-bundled-helper/index.js": {
+      "size": 150
+    },
+    "node_modules/pkg-shared-runtime/package.json": {
+      "json": {
+        "name": "pkg-shared-runtime",
+        "version": "1.2.0"
+      }
+    },
+    "node_modules/pkg-shared-runtime/index.js": {
+      "size": 400
+    },
+    "node_modules/dev-only-linter/package.json": {
+      "json": {
+        "name": "dev-only-linter",
+        "version": "1.0.0"
+      }
+    },
+    "node_modules/dev-only-linter/index.js": {
+      "size": 50000
+    },
+    "node_modules/dev-test-runner/package.json": {
+      "json": {
+        "name": "dev-test-runner",
+        "version": "3.0.0"
+      }
+    },
+    "node_modules/dev-test-runner/index.js": {
+      "size": 75000
+    }
+  }
+}
