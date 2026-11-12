@@ -1,0 +1,11 @@
+export type { ResumeDocument } from "@vervecv/evaluation";
+export { DocumentParseError } from "./errors.js";
+export { classifyHeading } from "./headings.js";
+export { DOCX_MIME, DOC_MIME, PDF_MIME, basenameOf, extensionOf, matchesMagic } from "./magic.js";
+export { PARSER_VERSION } from "./model.js";
+export { configurePdfWorker, extractPdf } from "./pdf.js";
+export { extractDocx } from "./docx.js";
+export { readDocxPackage } from "./zip.js";
+export { corruptPdfBytes, emptyPdfBytes, encryptedDocxBytes, sampleDocxBytes, samplePdfBytes } from "./samples.js";
+export type { DocxLimits } from "./docx.js";
+export type { PdfLimits } from "./pdf.js";

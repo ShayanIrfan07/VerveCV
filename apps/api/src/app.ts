@@ -6,7 +6,10 @@ import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import type { AppConfig } from "./config.js";
 import { errorBody } from "./http.js";
 import type { Database } from "./infrastructure/db/client.js";
+import type { ObjectStorage } from "./infrastructure/storage/memory.js";
 import { registerAuthRoutes } from "./modules/auth/routes.js";
+import type { ParseGate } from "./modules/uploads/parse-gate.js";
+import { registerUploadRoutes } from "./modules/uploads/routes.js";
 
 const REDACT_PATHS = [
   "req.headers.authorization",
@@ -21,12 +24,15 @@ const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 export interface AppDeps {
   config: AppConfig;
   db: Database | null;
+  storage?: ObjectStorage | null;
+  parseGate?: ParseGate | null;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const { config } = deps;
   const app = Fastify({
     logger: config.logger ? { redact: REDACT_PATHS } : false,
+    ajv: { customOptions: { removeAdditional: false } },
     requestIdHeader: "x-request-id",
     genReqId: (request) => {
       const header = request.headers["x-request-id"];
@@ -39,10 +45,23 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   }
 
   app.addHook("onRequest", async (request, reply) => {
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("x-frame-options", "DENY");
+    const origin = request.headers.origin;
+    if (typeof origin === "string" && config.allowedOrigins.includes(origin)) {
+      reply.header("access-control-allow-origin", origin);
+      reply.header("access-control-allow-credentials", "true");
+      reply.header("vary", "origin");
+      reply.header("access-control-allow-headers", "content-type");
+      reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
+    }
+    if (request.method === "OPTIONS") {
+      return reply.status(204).send();
+    }
     if (!MUTATING.has(request.method) || !request.url.startsWith("/api/")) {
       return;
     }
-    const origin = request.headers.origin;
     if (typeof origin !== "string" || !config.allowedOrigins.includes(origin)) {
       return reply.status(403).send(errorBody("ORIGIN_NOT_ALLOWED", "Origin is not allowed", request.id));
     }
@@ -84,5 +103,11 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   await registerAuthRoutes(app, deps);
+  await registerUploadRoutes(app, {
+    config,
+    db: deps.db,
+    storage: deps.storage ?? null,
+    parseGate: deps.parseGate ?? null,
+  });
   return app;
 }

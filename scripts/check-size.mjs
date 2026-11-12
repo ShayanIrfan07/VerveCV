@@ -4,6 +4,7 @@ import path from "node:path";
 
 const LIMIT_BYTES = 104_857_600;
 const ROOT = process.cwd();
+const optionalDependencyNames = new Map();
 const workspaceDeps = readWorkspaceDependencyNames();
 
 const sourceBytes = measureSourceBytes();
@@ -74,35 +75,60 @@ function measureProductionDependencies() {
   return packages;
 }
 
-function collectDependencies(dependencies, seenPaths, packages) {
+function collectDependencies(dependencies, seenPaths, packages, parentRoot) {
   if (dependencies === undefined) {
     return;
   }
+  const optionalNames = parentRoot ? readOptionalDependencyNames(parentRoot) : new Set();
   for (const [name, dependency] of Object.entries(dependencies)) {
-    if (dependency.optional === true || isDevelopmentOnly(name)) {
+    if (dependency.optional === true || isDevelopmentOnly(name) || isUnusedOptional(name, optionalNames)) {
       continue;
     }
     const packagePath = dependency.path;
-    if (
-      typeof packagePath === "string" &&
-      isInstalledPackage(packagePath) &&
-      !seenPaths.has(packagePath)
-    ) {
-      let packageRoot;
+    let packageRoot;
+    if (typeof packagePath === "string" && isInstalledPackage(packagePath) && !seenPaths.has(packagePath)) {
       try {
         packageRoot = realpathSync(packagePath);
       } catch {
-        continue;
+        packageRoot = undefined;
       }
-      seenPaths.add(packagePath);
-      packages.push({
-        name,
-        version: dependency.version ?? "unknown",
-        bytes: directorySize(packageRoot),
-      });
+      if (packageRoot) {
+        seenPaths.add(packagePath);
+        packages.push({
+          name,
+          version: dependency.version ?? "unknown",
+          bytes: directorySize(packageRoot),
+        });
+      }
     }
-    collectDependencies(dependency.dependencies, seenPaths, packages);
+    collectDependencies(dependency.dependencies, seenPaths, packages, packageRoot);
   }
+}
+
+function readOptionalDependencyNames(packageRoot) {
+  const cached = optionalDependencyNames.get(packageRoot);
+  if (cached) {
+    return cached;
+  }
+  const names = new Set();
+  try {
+    const manifest = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+    for (const name of Object.keys(manifest.optionalDependencies ?? {})) {
+      names.add(name);
+    }
+  } catch {
+    // A virtual store entry without a manifest contributes no optional names.
+  }
+  optionalDependencyNames.set(packageRoot, names);
+  return names;
+}
+
+function isUnusedOptional(name, optionalNames) {
+  if (!optionalNames.has(name)) {
+    return false;
+  }
+  // These packages are optional only so the hasher can ship one native build per OS.
+  return !name.startsWith("@node-rs/argon2-");
 }
 
 function isDevelopmentOnly(name) {

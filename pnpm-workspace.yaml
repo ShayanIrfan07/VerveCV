@@ -4,3 +4,7 @@ packages:
 
 onlyBuiltDependencies:
   - esbuild
+
+# Text extraction does not use the Node canvas binding PDF.js lists as optional.
+ignoredOptionalDependencies:
+  - "@napi-rs/canvas"

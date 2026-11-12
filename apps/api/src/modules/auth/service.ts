@@ -266,7 +266,7 @@ function requirePassword(password: string): string {
   return password;
 }
 
-function currentPeriodStart(now = new Date()): string {
+export function currentPeriodStart(now = new Date()): string {
   const month = String(now.getUTCMonth() + 1).padStart(2, "0");
   return `${now.getUTCFullYear()}-${month}-01`;
 }
