@@ -122,13 +122,33 @@ interface EvaluationFinding {
   status: "active" | "ignored" | "resolved";
 }
 
-interface RuleResult {
+type RuleWithholdReasonCode =
+  | "RULE_UNSPECIFIED"
+  | "OPEN_DECISION"
+  | "DICTIONARY_UNAVAILABLE"
+  | "MISSING_CANDIDATE_TYPE"
+  | "NO_APPLICABLE_ENTRIES"
+  | "UNRESOLVED_BAND";
+
+interface RuleResultBase {
   ruleId: string;
-  score: number;
   maxScore: number;
   findings: EvaluationFinding[];
   version: string;
 }
+
+interface ScoredRuleResult extends RuleResultBase {
+  status: "scored";
+  score: number;
+}
+
+interface WithheldRuleResult extends RuleResultBase {
+  status: "withheld";
+  score: null;
+  reasonCode: RuleWithholdReasonCode;
+}
+
+type RuleResult = ScoredRuleResult | WithheldRuleResult;
 ```
 
 `ResumeSection` and `BoundingBox` are structural types required to carry the rubric’s sections and the brief’s coordinates. They do not add scoring rules.
@@ -155,7 +175,7 @@ Identical document, options, rubric version, and parser version produce identica
 
 Suggested rubric version string until the open decisions are closed: `rubric-2026-11-12-provisional`. Any change to a weight, band, penalty, or dictionary that changes a score requires a new version string.
 
-Rules that hit an unresolved case return a withheld result (`score: null`, with a reason code) rather than a guessed number. The aggregator excludes withheld maxima from the displayed denominator and sets `score_status` to `PROVISIONAL`.
+Rules that hit an unresolved case return a withheld result (`status: "withheld"`, `score: null`, and a `reasonCode` from `RuleWithholdReasonCode`) rather than a guessed number. Scored rules return `status: "scored"` with a numeric `score` in `0..maxScore`. The aggregator excludes withheld maxima from the displayed denominator and sets `score_status` to `PROVISIONAL`.
 
 ## 5. Module boundaries
 
@@ -194,14 +214,14 @@ Error body, used for every error response:
 | POST | `/auth/register` | Create a user |
 | POST | `/auth/login` | Create a session |
 | POST | `/auth/refresh` | Rotate the refresh token |
-| POST | `/auth/logout` | Revoke the session |
+| POST | `/auth/logout` | Revoke the caller’s session family (single-device lineage; distinct from account-wide logout-all-devices) |
 | GET | `/me` | Current user |
 | POST | `/resumes/upload-intents` | Reserve a version and a signed upload |
 | POST | `/resumes/:resumeId/versions/:versionId/complete-upload` | Verify the stored object |
-| GET | `/resumes` | List the caller’s resumes |
+| GET | `/resumes` | List the caller’s resumes (paginated via `limit` and `offset`) |
 | GET | `/resumes/:id` | One resume, owned by the caller |
 | GET | `/resumes/:id/versions/:versionId/view-url` | Short-lived download URL |
-| DELETE | `/resumes/:id` | User-requested deletion |
+| DELETE | `/resumes/:id` | Soft-delete resume and enqueue `retention_tasks` (physical R2 deletion runs in Phase 7 worker) |
 | POST | `/evaluations` | Queue an authoritative evaluation |
 | GET | `/evaluations/:id` | Score, findings, status |
 | GET | `/evaluation-jobs/:id` | Job status |
@@ -295,7 +315,7 @@ Unique on (`user_id`, `normalized_term`).
 
 `id`, `resume_version_id`, `state`, `attempts`, `next_attempt_at`, `last_error_code`, `completed_at`
 
-States: `pending`, `running`, `succeeded`, `retryable_failure`. Object deletion and row deletion are idempotent. A missing object on a retry is success for that step.
+States: `pending`, `running`, `succeeded`, `retryable_failure`. Object deletion and row deletion are idempotent. A missing object on a retry is success for that step. Note: Phase 3 (`feature/resume-upload-and-parsing`) enqueues `pending` retention tasks and blocks access via `deleted_at` / `deletion_state = "delete_requested"`, while the background worker that executes physical R2 and derived-data deletion is a release-blocking dependency delivered in Phase 7 (`feature/retention-and-hardening`).
 
 ## 8. Upload and verification sequence
 

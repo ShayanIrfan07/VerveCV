@@ -1,5 +1,5 @@
 import { createStoredZip } from "./zip-write.js";
-import { DocumentParseError, withTimeout } from "./errors.js";
+import { DocumentAbortError, DocumentParseError, withTimeout } from "./errors.js";
 import { matchesMagic } from "./magic.js";
 import { toResumeDocument, type DocumentMeta, type SourceBlock } from "./model.js";
 import { readDocxPackage, type ZipLimits } from "./zip.js";
@@ -8,6 +8,7 @@ export interface DocxLimits {
   entryCap: number;
   uncompressedBytes: number;
   timeoutMs: number;
+  signal?: AbortSignal;
 }
 
 interface MammothNode {
@@ -49,13 +50,23 @@ export async function extractDocx(
     throw new DocumentParseError("UNSUPPORTED_TYPE");
   }
   const timeoutMs = limits?.timeoutMs ?? 0;
-  const read = async (): Promise<ReturnType<typeof toResumeDocument>> => {
+  const read = async (signal?: AbortSignal): Promise<ReturnType<typeof toResumeDocument>> => {
+    const checkAborted = (): void => {
+      if (signal?.aborted) {
+        throw limits?.signal?.aborted
+          ? new DocumentAbortError()
+          : new DocumentParseError("PARSE_TIMEOUT");
+      }
+    };
+    checkAborted();
     const zipLimits: ZipLimits | null = limits
       ? { entryCap: limits.entryCap, uncompressedBytes: limits.uncompressedBytes }
       : null;
     const pack = await readDocxPackage(bytes, zipLimits);
+    checkAborted();
     const payload = limits ? repackage(pack.files) : bytes;
     const blocks = await readParagraphs(payload);
+    checkAborted();
     const document = toResumeDocument(meta, blocks);
     if (document.blocks.length === 0) {
       throw new DocumentParseError("NO_EXTRACTABLE_TEXT");
@@ -65,12 +76,13 @@ export async function extractDocx(
   if (!limits) {
     return read();
   }
-  return withTimeout(timeoutMs, async (signal) => {
-    if (signal.aborted) {
-      throw new DocumentParseError("PARSE_TIMEOUT");
-    }
-    return read();
-  });
+  return withTimeout(
+    timeoutMs,
+    async (signal) => {
+      return read(signal);
+    },
+    limits.signal,
+  );
 }
 
 function repackage(files: Map<string, Uint8Array>): Uint8Array {

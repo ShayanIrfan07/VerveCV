@@ -1,9 +1,24 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type { AppConfig } from "../../config.js";
 import type { Database } from "../../infrastructure/db/client.js";
 import { errorBody } from "../../http.js";
-import { clearSessionCookies, readSignedCookie, REFRESH_COOKIE, SESSION_COOKIE, setSessionCookies } from "./cookies.js";
-import { AuthError, loginUser, logoutSession, readSessionUser, readUsage, refreshSession, registerUser } from "./service.js";
+import {
+  clearSessionCookies,
+  readSignedCookie,
+  REFRESH_COOKIE,
+  SESSION_COOKIE,
+  setSessionCookies,
+} from "./cookies.js";
+import { type RateLimitRule, SlidingWindowRateLimiter } from "./rate-limit.js";
+import {
+  AuthError,
+  loginUser,
+  logoutSession,
+  readSessionUser,
+  readUsage,
+  refreshSession,
+  registerUser,
+} from "./service.js";
 
 const registerSchema = {
   body: {
@@ -32,9 +47,23 @@ const loginSchema = {
 
 export async function registerAuthRoutes(
   app: FastifyInstance,
-  deps: { config: AppConfig; db: Database | null },
+  deps: { config: AppConfig; db: Database | null; rateLimiter?: SlidingWindowRateLimiter },
 ): Promise<void> {
+  const limiter = deps.rateLimiter ?? new SlidingWindowRateLimiter();
+  const limits = deps.config.authRateLimits;
+
   app.post("/api/v1/auth/register", { schema: registerSchema }, async (request, reply) => {
+    const allowed = enforceRateLimit(
+      limiter,
+      `register:ip:${request.ip}`,
+      limits.register,
+      reply,
+      request.id,
+    );
+    if (!allowed) {
+      return;
+    }
+
     try {
       const db = requireDb(deps.db);
       const body = request.body as { email: string; password: string; displayName?: string };
@@ -46,9 +75,32 @@ export async function registerAuthRoutes(
   });
 
   app.post("/api/v1/auth/login", { schema: loginSchema }, async (request, reply) => {
+    const ipAllowed = enforceRateLimit(
+      limiter,
+      `login:ip:${request.ip}`,
+      limits.loginIp,
+      reply,
+      request.id,
+    );
+    if (!ipAllowed) {
+      return;
+    }
+
+    const body = request.body as { email: string; password: string };
+    const normalizedAccount = body.email.trim().toLowerCase();
+    const accountAllowed = enforceRateLimit(
+      limiter,
+      `login:account:${normalizedAccount}`,
+      limits.loginAccount,
+      reply,
+      request.id,
+    );
+    if (!accountAllowed) {
+      return;
+    }
+
     try {
       const db = requireDb(deps.db);
-      const body = request.body as { email: string; password: string };
       const result = await loginUser(db, body, deps.config.sessionTtlSeconds);
       setSessionCookies(reply, deps.config, result.tokens.sessionId, result.tokens.refreshToken);
       return reply.status(200).send({ user: result.user });
@@ -58,10 +110,22 @@ export async function registerAuthRoutes(
   });
 
   app.post("/api/v1/auth/refresh", async (request, reply) => {
+    const allowed = enforceRateLimit(
+      limiter,
+      `refresh:ip:${request.ip}`,
+      limits.refresh,
+      reply,
+      request.id,
+    );
+    if (!allowed) {
+      return;
+    }
+
     try {
       const db = requireDb(deps.db);
       const refreshToken = readSignedCookie(request, REFRESH_COOKIE);
       if (!refreshToken) {
+        clearSessionCookies(reply, deps.config.secureCookies);
         return reply.status(401).send(errorBody("UNAUTHORIZED", "Unauthorized", request.id));
       }
       const tokens = await refreshSession(db, refreshToken, deps.config.sessionTtlSeconds);
@@ -77,12 +141,14 @@ export async function registerAuthRoutes(
     try {
       const db = requireDb(deps.db);
       const sessionId = readSignedCookie(request, SESSION_COOKIE);
-      if (sessionId) {
-        await logoutSession(db, sessionId);
+      const refreshToken = readSignedCookie(request, REFRESH_COOKIE);
+      if (sessionId || refreshToken) {
+        await logoutSession(db, { sessionId, refreshToken });
       }
       clearSessionCookies(reply, deps.config.secureCookies);
       return reply.status(204).send();
     } catch (error) {
+      clearSessionCookies(reply, deps.config.secureCookies);
       return sendAuthError(error, reply, request.id);
     }
   });
@@ -114,6 +180,24 @@ export async function registerAuthRoutes(
   });
 }
 
+function enforceRateLimit(
+  limiter: SlidingWindowRateLimiter,
+  key: string,
+  rule: RateLimitRule,
+  reply: FastifyReply,
+  requestId: string,
+): boolean {
+  const decision = limiter.consume(key, rule);
+  if (decision.allowed) {
+    return true;
+  }
+  reply.header("retry-after", String(decision.retryAfterSeconds));
+  void reply
+    .status(429)
+    .send(errorBody("RATE_LIMITED", "Too many requests", requestId));
+  return false;
+}
+
 function requireDb(db: Database | null): Database {
   if (!db) {
     throw new AuthError(503, "DATABASE_NOT_CONFIGURED", "Database is not configured");
@@ -129,7 +213,7 @@ async function currentUser(db: Database, request: Parameters<typeof readSignedCo
   return readSessionUser(db, sessionId);
 }
 
-function sendAuthError(error: unknown, reply: import("fastify").FastifyReply, requestId: string) {
+function sendAuthError(error: unknown, reply: FastifyReply, requestId: string) {
   if (error instanceof AuthError) {
     return reply.status(error.statusCode).send(errorBody(error.code, error.message, requestId));
   }

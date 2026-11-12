@@ -11,7 +11,13 @@ if (!config.cookieSecret || config.cookieSecret.length < 32) {
 
 const db = config.databaseUrl ? createDatabase(config.databaseUrl) : null;
 const storage = config.r2 ? createR2Storage(config.r2) : null;
-const parseGate = config.parseConcurrency === null ? null : new ParseGate(config.parseConcurrency);
+const parseGate =
+  config.parseConcurrency === null
+    ? null
+    : new ParseGate(config.parseConcurrency, {
+        maxQueue: config.parseMaxQueue,
+        maxWaitMs: config.parseQueueTimeoutMs,
+      });
 const app = await buildApp({ config, db, storage, parseGate });
 
 try {

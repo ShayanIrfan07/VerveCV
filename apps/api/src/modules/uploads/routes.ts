@@ -7,7 +7,15 @@ import { readSignedCookie, SESSION_COOKIE } from "../auth/cookies.js";
 import { readSessionUser } from "../auth/service.js";
 import { UploadError } from "./errors.js";
 import type { ParseGate } from "./parse-gate.js";
-import { completeUpload, createUploadIntent, createViewUrl, deleteResume, getResume, listResumes } from "./service.js";
+import {
+  completeUpload,
+  createUploadIntent,
+  createViewUrl,
+  deleteResume,
+  getResume,
+  listResumes,
+  MAX_RESUME_LIST_LIMIT,
+} from "./service.js";
 
 const UUID = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
@@ -54,16 +62,36 @@ const resumeParams = {
   },
 } as const;
 
+const listResumesSchema = {
+  querystring: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      limit: { type: "integer", minimum: 1, maximum: MAX_RESUME_LIST_LIMIT },
+      offset: { type: "integer", minimum: 0 },
+    },
+  },
+} as const;
+
 export async function registerUploadRoutes(
   app: FastifyInstance,
-  deps: { config: AppConfig; db: Database | null; storage: ObjectStorage | null; parseGate: ParseGate | null },
+  deps: {
+    config: AppConfig;
+    db: Database | null;
+    storage: ObjectStorage | null;
+    parseGate: ParseGate | null;
+  },
 ): Promise<void> {
   app.post("/api/v1/resumes/upload-intents", { schema: intentSchema }, async (request, reply) => {
     try {
       const user = await requireUser(deps.db, request);
       const ready = requireReady(deps);
       const body = request.body as { filename: string; mimeType: string; sizeBytes: number };
-      const intent = await createUploadIntent({ ...ready, config: deps.config, parseGate: deps.parseGate }, user.id, body);
+      const intent = await createUploadIntent(
+        { ...ready, config: deps.config, parseGate: deps.parseGate },
+        user.id,
+        body,
+      );
       return reply.status(201).send(intent);
     } catch (error) {
       return sendUploadError(error, reply, request.id);
@@ -74,27 +102,48 @@ export async function registerUploadRoutes(
     "/api/v1/resumes/:resumeId/versions/:versionId/complete-upload",
     { schema: completeSchema },
     async (request, reply) => {
+      const abortController = new AbortController();
+      const onAborted = (): void => {
+        if (!reply.sent) {
+          abortController.abort();
+        }
+      };
+      request.raw.on("aborted", onAborted);
+      request.raw.on("close", () => {
+        if (!reply.raw.writableEnded) {
+          abortController.abort();
+        }
+      });
+
       try {
         const user = await requireUser(deps.db, request);
         const ready = requireReady(deps);
         const params = request.params as { resumeId: string; versionId: string };
-        const result = await completeUpload(
+        return await completeUpload(
           { ...ready, config: deps.config, parseGate: deps.parseGate },
           user.id,
           params.resumeId,
           params.versionId,
+          { signal: abortController.signal },
         );
-        return result;
       } catch (error) {
         return sendUploadError(error, reply, request.id);
+      } finally {
+        request.raw.off("aborted", onAborted);
       }
     },
   );
 
-  app.get("/api/v1/resumes", async (request, reply) => {
+  app.get("/api/v1/resumes", { schema: listResumesSchema }, async (request, reply) => {
     try {
       const user = await requireUser(deps.db, request);
-      return listResumes(requireDb(deps.db), user.id);
+      const db = requireDb(deps.db);
+      const query = request.query as { limit?: number; offset?: number };
+      const cleanupDeps =
+        deps.storage && deps.config.signedUrlTtlSeconds !== null
+          ? { db, storage: deps.storage, config: deps.config }
+          : null;
+      return await listResumes(db, user.id, query, cleanupDeps);
     } catch (error) {
       return sendUploadError(error, reply, request.id);
     }
@@ -104,7 +153,7 @@ export async function registerUploadRoutes(
     try {
       const user = await requireUser(deps.db, request);
       const params = request.params as { resumeId: string };
-      return getResume(requireDb(deps.db), user.id, params.resumeId);
+      return await getResume(requireDb(deps.db), user.id, params.resumeId);
     } catch (error) {
       return sendUploadError(error, reply, request.id);
     }
@@ -118,7 +167,7 @@ export async function registerUploadRoutes(
         const user = await requireUser(deps.db, request);
         const ready = requireReady(deps);
         const params = request.params as { resumeId: string; versionId: string };
-        return createViewUrl(
+        return await createViewUrl(
           { ...ready, config: deps.config, parseGate: deps.parseGate },
           user.id,
           params.resumeId,
@@ -149,7 +198,10 @@ function requireDb(db: Database | null): Database {
   return db;
 }
 
-function requireReady(deps: { db: Database | null; storage: ObjectStorage | null }): { db: Database; storage: ObjectStorage } {
+function requireReady(deps: {
+  db: Database | null;
+  storage: ObjectStorage | null;
+}): { db: Database; storage: ObjectStorage } {
   return { db: requireDb(deps.db), storage: requireStorage(deps.storage) };
 }
 
@@ -175,6 +227,9 @@ async function requireUser(db: Database | null, request: FastifyRequest) {
 
 function sendUploadError(error: unknown, reply: FastifyReply, requestId: string) {
   if (error instanceof UploadError) {
+    if (error.code === "PARSE_OVERLOADED") {
+      reply.header("retry-after", "5");
+    }
     return reply.status(error.statusCode).send(errorBody(error.code, error.message, requestId));
   }
   throw error;

@@ -7,6 +7,7 @@ import type { AppConfig } from "./config.js";
 import { errorBody } from "./http.js";
 import type { Database } from "./infrastructure/db/client.js";
 import type { ObjectStorage } from "./infrastructure/storage/memory.js";
+import type { SlidingWindowRateLimiter } from "./modules/auth/rate-limit.js";
 import { registerAuthRoutes } from "./modules/auth/routes.js";
 import type { ParseGate } from "./modules/uploads/parse-gate.js";
 import { registerUploadRoutes } from "./modules/uploads/routes.js";
@@ -21,11 +22,27 @@ const REDACT_PATHS = [
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
+export const MAX_REQUEST_ID_LENGTH = 128;
+const SAFE_REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export function resolveRequestId(header: string | string[] | undefined): string {
+  if (
+    typeof header === "string" &&
+    header.length >= 1 &&
+    header.length <= MAX_REQUEST_ID_LENGTH &&
+    SAFE_REQUEST_ID_PATTERN.test(header)
+  ) {
+    return header;
+  }
+  return randomUUID();
+}
+
 export interface AppDeps {
   config: AppConfig;
   db: Database | null;
   storage?: ObjectStorage | null;
   parseGate?: ParseGate | null;
+  rateLimiter?: SlidingWindowRateLimiter;
 }
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
@@ -33,16 +50,18 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: config.logger ? { redact: REDACT_PATHS } : false,
     ajv: { customOptions: { removeAdditional: false } },
-    requestIdHeader: "x-request-id",
-    genReqId: (request) => {
-      const header = request.headers["x-request-id"];
-      return typeof header === "string" && header.length > 0 ? header : randomUUID();
-    },
+    requestIdHeader: false,
+    genReqId: (request) => resolveRequestId(request.headers["x-request-id"]),
   });
 
   if (config.cookieSecret) {
     await app.register(cookie, { secret: config.cookieSecret });
   }
+
+  app.addHook("onSend", (_request, reply, payload, done) => {
+    reply.header("x-request-id", _request.id);
+    done(null, payload);
+  });
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("referrer-policy", "no-referrer");
@@ -53,7 +72,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
       reply.header("access-control-allow-origin", origin);
       reply.header("access-control-allow-credentials", "true");
       reply.header("vary", "origin");
-      reply.header("access-control-allow-headers", "content-type");
+      reply.header("access-control-allow-headers", "content-type, x-request-id");
       reply.header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS");
     }
     if (request.method === "OPTIONS") {

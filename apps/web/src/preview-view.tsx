@@ -166,7 +166,7 @@ function PdfPage({
 
 async function renderPage(bytes: Uint8Array, pageNumber: number, canvas: HTMLCanvasElement): Promise<void> {
   const pdfjs = await loadPdfjs();
-  const task = pdfjs.getDocument({ data: bytes, isEvalSupported: false, disableFontFace: true, verbosity: 0 });
+  const task = pdfjs.getDocument({ data: bytes.slice(), isEvalSupported: false, disableFontFace: true, verbosity: 0 });
   const pdf = await task.promise;
   try {
     const page = await pdf.getPage(pageNumber);

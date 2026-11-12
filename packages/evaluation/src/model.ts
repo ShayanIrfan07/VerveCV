@@ -68,12 +68,32 @@ export interface EvaluationFinding {
   status: "active" | "ignored" | "resolved";
 }
 
-export interface RuleResult {
+export type RuleWithholdReasonCode =
+  | "RULE_UNSPECIFIED"
+  | "OPEN_DECISION"
+  | "DICTIONARY_UNAVAILABLE"
+  | "MISSING_CANDIDATE_TYPE"
+  | "NO_APPLICABLE_ENTRIES"
+  | "UNRESOLVED_BAND";
+
+export interface RuleResultBase {
   ruleId: string;
-  score: number;
   maxScore: number;
   findings: EvaluationFinding[];
   version: string;
 }
+
+export interface ScoredRuleResult extends RuleResultBase {
+  status: "scored";
+  score: number;
+}
+
+export interface WithheldRuleResult extends RuleResultBase {
+  status: "withheld";
+  score: null;
+  reasonCode: RuleWithholdReasonCode;
+}
+
+export type RuleResult = ScoredRuleResult | WithheldRuleResult;
 
 export type ScoreStatus = "PREVIEW_ONLY" | "PROVISIONAL" | "FINAL";

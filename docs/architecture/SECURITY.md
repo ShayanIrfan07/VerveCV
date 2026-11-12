@@ -39,7 +39,7 @@ A second user’s identifier in a URL is an insecure direct object reference. Ev
 | Token placement | Cookies only; not `localStorage` or `sessionStorage` |
 | Refresh | Rotate on use; store the new hash; keep `rotated_from_id` |
 | Reuse detection | Presentation of a rotated refresh token revokes the token family |
-| Logout | Sets `revoked_at` |
+| Logout | Revokes the caller’s session and its rotated refresh-token lineage (`rotated_from_id` family) without revoking unrelated device sessions; logout-all-devices is a separate account-wide revocation (`WHERE user_id = $1`) |
 | Email | Stored normalized and unique |
 
 Argon2id parameters must meet the OWASP Password Storage Cheat Sheet that is current when Phase 2 is implemented. This document does not freeze a memory or iteration number ahead of that check.
@@ -98,7 +98,7 @@ Server-side parsing does not run unbounded on the request thread. It runs under 
 
 Each resume version has `expires_at` 90 days after creation. A retention task deletes the R2 object, extracted content, preview data, findings, and other personal evaluation fields for that version. The task is safe to retry. Audit events record the event type and the target id, not the file contents.
 
-User-requested delete uses the same task path and may run before day 90.
+User-requested delete uses the same task path and may run before day 90. Until Phase 7 (`feature/retention-and-hardening`) ships the retryable deletion worker, `DELETE /api/v1/resumes/:id` only performs logical access revocation (`deleted_at`, `deletion_state = "delete_requested"`) and enqueues `retention_tasks`; completing physical R2 object and derived-data deletion in Phase 7 is a release blocker for Version 1.
 
 Neon point-in-time recovery and R2 noncurrent-object retention can keep bytes after the application delete. The product copy must say that application-level deletion is within 90 days, and it must describe provider backup retention only after those provider settings are known. Decision 13 and additional item A8 cover that disclosure.
 

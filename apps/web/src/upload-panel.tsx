@@ -29,7 +29,12 @@ export function UploadPanel({ user }: { user: SessionUser | null }) {
     if (!file) {
       return;
     }
-    const mimeType = file.name.toLowerCase().endsWith(".docx") ? DOCX_MIME : PDF_MIME;
+    const lower = file.name.toLowerCase();
+    const mimeType = lower.endsWith(".docx")
+      ? DOCX_MIME
+      : lower.endsWith(".pdf")
+        ? PDF_MIME
+        : file.type || "application/octet-stream";
     await openBytes(file.name, mimeType, new Uint8Array(await file.arrayBuffer()));
   }
 

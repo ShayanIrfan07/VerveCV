@@ -1,5 +1,5 @@
 import type { BoundingBox } from "@vervecv/evaluation";
-import { DocumentParseError, withTimeout } from "./errors.js";
+import { DocumentAbortError, DocumentParseError, withTimeout } from "./errors.js";
 import { matchesMagic } from "./magic.js";
 import { toResumeDocument, type DocumentMeta, type SourceBlock } from "./model.js";
 import type { PdfjsModule, PdfjsTextItem } from "./pdf-types.js";
@@ -7,6 +7,7 @@ import type { PdfjsModule, PdfjsTextItem } from "./pdf-types.js";
 export interface PdfLimits {
   pageCap: number | null;
   timeoutMs: number | null;
+  signal?: AbortSignal;
 }
 
 let workerSrcOverride: string | null = null;
@@ -22,10 +23,10 @@ export async function extractPdf(bytes: Uint8Array, meta: DocumentMeta, limits: 
   const work = async (signal: AbortSignal): Promise<ReturnType<typeof toResumeDocument>> => {
     const pdfjs = await loadPdfjs();
     if (signal.aborted) {
-      throw new DocumentParseError("PARSE_TIMEOUT");
+      throw limits.signal?.aborted ? new DocumentAbortError() : new DocumentParseError("PARSE_TIMEOUT");
     }
     const loadingTask = pdfjs.getDocument({
-      data: bytes,
+      data: bytes.slice(),
       isEvalSupported: false,
       disableFontFace: true,
       useSystemFonts: false,
@@ -48,7 +49,7 @@ export async function extractPdf(bytes: Uint8Array, meta: DocumentMeta, limits: 
         const pages: { page: number; width: number; height: number }[] = [];
         for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
           if (signal.aborted) {
-            throw new DocumentParseError("PARSE_TIMEOUT");
+            throw limits.signal?.aborted ? new DocumentAbortError() : new DocumentParseError("PARSE_TIMEOUT");
           }
           const page = await pdf.getPage(pageNumber);
           const viewport = page.getViewport({ scale: 1 });
@@ -68,8 +69,11 @@ export async function extractPdf(bytes: Uint8Array, meta: DocumentMeta, limits: 
         await pdf.cleanup?.();
       }
     } catch (error) {
-      if (error instanceof DocumentParseError) {
+      if (error instanceof DocumentParseError || error instanceof DocumentAbortError) {
         throw error;
+      }
+      if (limits.signal?.aborted) {
+        throw new DocumentAbortError();
       }
       const name = error instanceof Error ? error.name : "";
       if (name === "PasswordException") {
@@ -81,9 +85,9 @@ export async function extractPdf(bytes: Uint8Array, meta: DocumentMeta, limits: 
     }
   };
   if (limits.timeoutMs === null) {
-    return work(new AbortController().signal);
+    return work(limits.signal ?? new AbortController().signal);
   }
-  return withTimeout(limits.timeoutMs, work);
+  return withTimeout(limits.timeoutMs, work, limits.signal);
 }
 
 async function loadPdfjs(): Promise<PdfjsModule> {

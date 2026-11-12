@@ -134,11 +134,13 @@ Recommended runtime: Node.js 26.x Active LTS. On 2026-11-12 the Active LTS secur
 
 ## 9. Dependency footprint
 
-Limit: 104,857,600 bytes for tracked source, production dependencies, production dictionaries, and production native binaries. Development dependencies, git history, test fixtures, caches, and build artifacts are outside this particular limit. Frontend bundle size, API artifact size, compressed deploy size, runtime disk, and peak memory are reported separately and do not relax the 100 MiB limit.
+Limit: 104,857,600 bytes (100 MiB) for tracked source, production dependencies, production dictionaries, and production native binaries. Development dependencies, git history, test fixtures, caches, and build artifacts are outside this particular limit. Frontend bundle size, API artifact size, compressed deploy size, runtime disk, and peak memory are reported separately and do not relax the 100 MiB limit.
 
-### 9.1 How this estimate was made
+All footprint numbers in this Phase 0 document are **provisional estimates**, not verified measurements. Because Phase 0 contains no lockfile, installed `node_modules`, or application source code, the actual footprint must be verified in Phase 1 (and enforced in CI thereafter) by running `scripts/check-size.mjs` against the real installed production dependencies and tracked source files.
 
-On 2026-11-12 the npm registry `dist.unpackedSize` field was read for each package version below. Transitive `dependencies` were walked and resolved to the registry `latest` version at query time. That is not a lockfile resolution. `optionalDependencies` were not walked, except the single Linux argon2 binary measured on its own. Group totals were added without cross-group deduplication, so a shared transitive package would be counted twice. The figure is a conservative upper bound, not a passing `scripts/check-size.mjs` run. Phase 1 creates that script and the authoritative measurement.
+### 9.1 How this provisional estimate was made
+
+On 2026-11-12 the npm registry `dist.unpackedSize` field was read for each package version below. Transitive `dependencies` were walked and resolved to the registry `latest` version at query time. That is not a lockfile resolution, and registry metadata can differ from files materialized on disk by `pnpm install`. `optionalDependencies` were not walked, except the single Linux argon2 binary measured on its own, and Phase 1+ tracked source files do not exist yet on this branch. Group totals were added without cross-group deduplication, so a shared transitive package would be counted twice. Treat this figure strictly as a provisional planning estimate, not a passing `scripts/check-size.mjs` run; Phase 1 implements that script and verifies the actual source-plus-production-dependency total.
 
 ### 9.2 Proposed production set
 
@@ -159,19 +161,20 @@ Spelling candidate, not yet accepted: `nspell@2.1.5` plus `dictionary-en@4.0.0`,
 
 Argon2 native binary for the production OS: `@node-rs/argon2-linux-x64-gnu@2.2.2`, **728,614 bytes (0.69 MiB)**. The Windows x64 binary is 0.58 MiB. The size gate must count the binary that production ships, not every platform package. `@node-rs/argon2@2.2.2` itself is 0.04 MiB and lists 13 platform packages as optional dependencies.
 
-### 9.3 Upper bound
+### 9.3 Provisional budget summary
 
 | Group | Bytes |
 |---|---:|
-| Frontend production tree | 53,783,631 |
-| API production tree | 20,345,999 |
-| Spelling candidate | 622,389 |
-| One Linux argon2 binary | 728,614 |
-| **Sum (upper bound)** | **75,480,633** |
-| Limit | 104,857,600 |
-| Headroom | 29,376,967 (28.02 MiB) |
+| Tracked source files | Measured in Phase 1 (no application source in Phase 0) |
+| Frontend production tree (provisional) | 53,783,631 |
+| API production tree (provisional) | 20,345,999 |
+| Spelling candidate (provisional) | 622,389 |
+| One Linux argon2 binary (provisional) | 728,614 |
+| **Provisional dependency sum** | **75,480,633** |
+| Limit (source + production dependencies) | 104,857,600 |
+| Estimated headroom before source files | 29,376,967 (28.02 MiB) |
 
-The proposed stack fits the budget on this estimate, with these binding choices:
+The proposed stack fits the 100 MiB budget under this provisional estimate, subject to verification against actual installed production dependencies and tracked source files in Phase 1, with these binding choices:
 
 - Sign R2 requests with `aws4fetch`. The `@aws-sdk/client-s3@3.1167.0` tree measured **8.27 MiB** and is the heavier alternative.
 - Use `postgres` (postgres.js) with Neon’s pooled connection string. The API design target is one long-running Node process. `@neondatabase/serverless` (0.42 MiB) stays out unless the API host cannot open a pooled TCP connection. Hosting is still an open decision, and a move to a serverless isolate would force a driver change.
@@ -229,7 +232,7 @@ Each phase is a separate branch and pull request. This branch is `feature/archit
 | 4 | `feature/rule-based-scoring` | Rules that are fully specified |
 | 5 | `feature/grammar-and-spelling` | Dictionary size check, then grammar rules |
 | 6 | `feature/evaluation-dashboard` | Score UI and history |
-| 7 | `feature/retention-and-hardening` | Jobs, 90-day deletion, rate limits |
+| 7 | `feature/retention-and-hardening` | Jobs, retryable R2 + DB physical deletion worker (release-blocking for `DELETE /resumes/:id` and 90-day expiry), rate limits |
 | 8 | `feature/pro-subscriptions` | Starts only after pricing, quotas, and a provider are approved |
 | 9 | `feature/release-readiness` | Release checklist |
 

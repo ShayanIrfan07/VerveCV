@@ -1,5 +1,5 @@
 export type { ResumeDocument } from "@vervecv/evaluation";
-export { DocumentParseError } from "./errors.js";
+export { DocumentAbortError, DocumentParseError } from "./errors.js";
 export { classifyHeading } from "./headings.js";
 export { DOCX_MIME, DOC_MIME, PDF_MIME, basenameOf, extensionOf, matchesMagic } from "./magic.js";
 export { PARSER_VERSION } from "./model.js";

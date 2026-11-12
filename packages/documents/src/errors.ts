@@ -27,13 +27,43 @@ export class DocumentParseError extends Error {
   }
 }
 
-export async function withTimeout<T>(timeoutMs: number, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export class DocumentAbortError extends Error {
+  constructor() {
+    super("Document parse was cancelled.");
+    this.name = "DocumentAbortError";
+  }
+}
+
+export async function withTimeout<T>(
+  timeoutMs: number,
+  work: (signal: AbortSignal) => Promise<T>,
+  externalSignal?: AbortSignal,
+): Promise<T> {
+  if (externalSignal?.aborted) {
+    throw new DocumentAbortError();
+  }
+
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const onExternalAbort = (): void => {
+    controller.abort();
+  };
+  externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
+
   try {
     return await Promise.race([
       work(controller.signal),
       new Promise<T>((_, reject) => {
+        if (externalSignal) {
+          externalSignal.addEventListener(
+            "abort",
+            () => {
+              reject(new DocumentAbortError());
+            },
+            { once: true },
+          );
+        }
         timer = setTimeout(() => {
           controller.abort();
           reject(new DocumentParseError("PARSE_TIMEOUT"));
@@ -44,5 +74,6 @@ export async function withTimeout<T>(timeoutMs: number, work: (signal: AbortSign
     if (timer !== undefined) {
       clearTimeout(timer);
     }
+    externalSignal?.removeEventListener("abort", onExternalAbort);
   }
 }
