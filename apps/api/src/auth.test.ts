@@ -41,7 +41,7 @@ async function createTestApp(
 }
 
 describe("database migrations", () => {
-  it("applies all schema tables, indexes, and constraints cleanly on a fresh database", async () => {
+  it("applies all schema tables, columns, indexes, and constraints cleanly on a fresh database", async () => {
     const client = new PGlite();
     const pgliteDb = drizzle(client, { schema });
     await migrate(pgliteDb, { migrationsFolder: path.resolve("database/migrations") });
@@ -66,7 +66,11 @@ describe("database migrations", () => {
       "users",
     ]);
 
-    // Re-running migrate is idempotent
+    const cols = await client.query<{ column_name: string }>(
+      "select column_name from information_schema.columns where table_name = 'resume_versions' and column_name = 'verification_state'",
+    );
+    expect(cols.rows).toHaveLength(1);
+
     await migrate(pgliteDb, { migrationsFolder: path.resolve("database/migrations") });
     await client.close();
   });
@@ -224,8 +228,6 @@ describe("authentication", () => {
       expect(rejected.json()).toMatchObject({ error: { code: "REFRESH_REUSE" } });
     }
 
-    // Because concurrent reuse occurred on the same token family, even the rotated token
-    // issued to the first request is revoked by family reuse detection.
     const issuedRefresh = successes[0]?.cookies.find((cookie) => cookie.name === "vervecv_refresh");
     const issuedSession = successes[0]?.cookies.find((cookie) => cookie.name === "vervecv_session");
     const followUpRefresh = await app.inject({
@@ -258,7 +260,6 @@ describe("authentication", () => {
       payload: { email: "ada@example.com", password: "correct-horse" },
     });
 
-    // Device A logs in and rotates
     const deviceALogin = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -267,7 +268,6 @@ describe("authentication", () => {
     });
     const deviceARefresh1 = deviceALogin.cookies.find((cookie) => cookie.name === "vervecv_refresh");
 
-    // Device B logs in independently
     const deviceBLogin = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -301,7 +301,6 @@ describe("authentication", () => {
     });
     expect(afterReuseA.statusCode).toBe(401);
 
-    // Device B remains valid
     const meB = await app.inject({
       method: "GET",
       url: "/api/v1/me",
@@ -329,7 +328,6 @@ describe("authentication", () => {
       payload: { email: "logout@example.com", password: "correct-horse" },
     });
 
-    // Device 1
     const login1 = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -339,7 +337,6 @@ describe("authentication", () => {
     const session1 = login1.cookies.find((cookie) => cookie.name === "vervecv_session");
     const refresh1 = login1.cookies.find((cookie) => cookie.name === "vervecv_refresh");
 
-    // Device 2 (independent login)
     const login2 = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -348,7 +345,6 @@ describe("authentication", () => {
     });
     const session2 = login2.cookies.find((cookie) => cookie.name === "vervecv_session");
 
-    // Race refresh and logout on Device 1 using stale session1 + refresh1
     const [refreshRace, logoutRace] = await Promise.all([
       app.inject({
         method: "POST",
@@ -370,7 +366,6 @@ describe("authentication", () => {
 
     expect(logoutRace.statusCode).toBe(204);
 
-    // Regardless of whether refresh or logout ran first, the entire Device 1 lineage must now be dead
     const postRaceMe1 = await app.inject({
       method: "GET",
       url: "/api/v1/me",
@@ -404,7 +399,6 @@ describe("authentication", () => {
       expect(childRefreshAttempt.statusCode).toBe(401);
     }
 
-    // Also verify logout when ONLY the refresh cookie is sent (e.g. expired/missing session cookie)
     const login3 = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -428,7 +422,6 @@ describe("authentication", () => {
     });
     expect(me3AfterLogout.statusCode).toBe(401);
 
-    // Device 2 remains active (single-device logout, not logout-all-devices)
     const me2 = await app.inject({
       method: "GET",
       url: "/api/v1/me",
@@ -480,7 +473,6 @@ describe("authentication", () => {
     });
     expect(crossSiteFormLogout.statusCode).toBe(403);
 
-    // Session was NOT revoked by cross-site CSRF attempt
     const me = await app.inject({
       method: "GET",
       url: "/api/v1/me",
@@ -507,7 +499,6 @@ describe("authentication", () => {
       { rateLimiter: limiter },
     );
 
-    // Register limit = 2 per window
     const r1 = await app.inject({
       method: "POST",
       url: "/api/v1/auth/register",
@@ -534,7 +525,6 @@ describe("authentication", () => {
       error: { code: "RATE_LIMITED", message: "Too many requests" },
     });
 
-    // Login per-account limit = 2 per window
     const l1 = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -559,7 +549,6 @@ describe("authentication", () => {
     expect(l3.headers["retry-after"]).toBe("60");
     expect(l3.json()).toMatchObject({ error: { code: "RATE_LIMITED" } });
 
-    // Second account still allowed under per-IP limit (loginIp max = 4)
     const lOther = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -569,7 +558,6 @@ describe("authentication", () => {
     expect(lOther.statusCode).toBe(200);
     const refreshCookie = lOther.cookies.find((cookie) => cookie.name === "vervecv_refresh");
 
-    // 5th login from same IP hits loginIp limit (max = 4)
     const lIpBlocked = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
@@ -578,7 +566,6 @@ describe("authentication", () => {
     });
     expect(lIpBlocked.statusCode).toBe(429);
 
-    // Refresh limit = 2 per window
     const ref1 = await app.inject({
       method: "POST",
       url: "/api/v1/auth/refresh",
@@ -604,7 +591,6 @@ describe("authentication", () => {
     expect(ref3.headers["retry-after"]).toBe("60");
     expect(ref3.json()).toMatchObject({ error: { code: "RATE_LIMITED" } });
 
-    // Advance past rate-limit window -> requests succeed again
     fakeNow += 61_000;
     const refAfterWindow = await app.inject({
       method: "POST",

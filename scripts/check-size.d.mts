@@ -7,7 +7,13 @@ export interface MeasuredDependency {
   path: string;
 }
 
-export interface AnalyzeFootprintOptions {
+export interface MeasureProductionDependenciesOptions {
+  platform?: string;
+  arch?: string;
+  libc?: string;
+}
+
+export interface AnalyzeFootprintOptions extends MeasureProductionDependenciesOptions {
   rootDir?: string;
   limitBytes?: number;
   trackedFiles?: readonly string[];
@@ -41,7 +47,10 @@ export interface RunSizeCheckResult extends FootprintReport {
 export function isExcludedSource(file: string): boolean;
 export function listGitTrackedFiles(rootDir: string): string[];
 export function measureSourceBytes(rootDir: string, options?: MeasureSourceOptions): number;
-export function measureProductionDependencies(rootDir: string): MeasuredDependency[];
+export function measureProductionDependencies(
+  rootDir: string,
+  options?: MeasureProductionDependenciesOptions,
+): MeasuredDependency[];
 export function analyzeFootprint(options?: AnalyzeFootprintOptions): FootprintReport;
 export function runSizeCheck(options?: RunSizeCheckOptions): RunSizeCheckResult;
 export function formatBytes(bytes: number): string;

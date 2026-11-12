@@ -157,9 +157,13 @@ describe("check-size production dependency and source accounting", () => {
     expect(report.limitBytes).toBe(LIMIT_BYTES);
   });
 
-  it("deduplicates pnpm virtual-store symlinks, counts installed optional binaries, and ignores dev peers", () => {
+  it("deduplicates pnpm virtual-store symlinks, counts only the matching platform optional binary, and honors ignoredOptionalDependencies", () => {
     const rootDir = createTempWorkspace();
-    writeText(rootDir, "pnpm-workspace.yaml", 'packages:\n  - "apps/*"\n');
+    writeText(
+      rootDir,
+      "pnpm-workspace.yaml",
+      'packages:\n  - "apps/*"\nignoredOptionalDependencies:\n  - "@napi-rs/canvas"\n',
+    );
     writeJson(rootDir, "package.json", {
       name: "pnpm-fixture",
       private: true,
@@ -197,6 +201,9 @@ describe("check-size production dependency and source accounting", () => {
       {
         name: "shared-core",
         version: "1.0.0",
+        optionalDependencies: {
+          "@napi-rs/canvas": "1.1.1",
+        },
         peerDependencies: {
           "peer-dep": "^1.0.0",
           "@electric-sql/pglite": "^0.5.0",
@@ -211,6 +218,39 @@ describe("check-size production dependency and source accounting", () => {
       rootDir,
       "node_modules/.pnpm/shared-core@1.0.0_peer-dep@1.0.0/node_modules/shared-core/index.js",
       1200,
+    );
+
+    // Ignored optional dependency present on disk -> must be skipped
+    const canvasStoreDir = path.join(
+      rootDir,
+      "node_modules",
+      ".pnpm",
+      "@napi-rs+canvas@1.1.1",
+      "node_modules",
+      "@napi-rs",
+      "canvas",
+    );
+    writeJson(
+      rootDir,
+      "node_modules/.pnpm/@napi-rs+canvas@1.1.1/node_modules/@napi-rs/canvas/package.json",
+      { name: "@napi-rs/canvas", version: "1.1.1" },
+    );
+    writeSizedFile(
+      rootDir,
+      "node_modules/.pnpm/@napi-rs+canvas@1.1.1/node_modules/@napi-rs/canvas/canvas.node",
+      500_000,
+    );
+    linkDirectory(
+      canvasStoreDir,
+      path.join(
+        rootDir,
+        "node_modules",
+        ".pnpm",
+        "shared-core@1.0.0_peer-dep@1.0.0",
+        "node_modules",
+        "@napi-rs",
+        "canvas",
+      ),
     );
 
     const peerStoreDir = path.join(
@@ -308,7 +348,7 @@ describe("check-size production dependency and source accounting", () => {
       250,
     );
 
-    const nativeStoreDir = path.join(
+    const linuxStoreDir = path.join(
       rootDir,
       "node_modules",
       ".pnpm",
@@ -317,19 +357,39 @@ describe("check-size production dependency and source accounting", () => {
       "@vendor",
       "hasher-linux-x64",
     );
-    const nativeManifestBytes = writeJson(
+    const linuxManifestBytes = writeJson(
       rootDir,
       "node_modules/.pnpm/@vendor+hasher-linux-x64@2.0.0/node_modules/@vendor/hasher-linux-x64/package.json",
-      { name: "@vendor/hasher-linux-x64", version: "2.0.0" },
+      { name: "@vendor/hasher-linux-x64", version: "2.0.0", os: ["linux"], cpu: ["x64"], libc: ["glibc"] },
     );
-    const nativeBinBytes = writeSizedFile(
+    const linuxBinBytes = writeSizedFile(
       rootDir,
       "node_modules/.pnpm/@vendor+hasher-linux-x64@2.0.0/node_modules/@vendor/hasher-linux-x64/hasher.node",
       4096,
     );
 
+    const darwinStoreDir = path.join(
+      rootDir,
+      "node_modules",
+      ".pnpm",
+      "@vendor+hasher-darwin-arm64@2.0.0",
+      "node_modules",
+      "@vendor",
+      "hasher-darwin-arm64",
+    );
+    writeJson(
+      rootDir,
+      "node_modules/.pnpm/@vendor+hasher-darwin-arm64@2.0.0/node_modules/@vendor/hasher-darwin-arm64/package.json",
+      { name: "@vendor/hasher-darwin-arm64", version: "2.0.0", os: ["darwin"], cpu: ["arm64"] },
+    );
+    writeSizedFile(
+      rootDir,
+      "node_modules/.pnpm/@vendor+hasher-darwin-arm64@2.0.0/node_modules/@vendor/hasher-darwin-arm64/hasher.node",
+      8192,
+    );
+
     linkDirectory(
-      nativeStoreDir,
+      linuxStoreDir,
       path.join(
         rootDir,
         "node_modules",
@@ -340,6 +400,18 @@ describe("check-size production dependency and source accounting", () => {
         "hasher-linux-x64",
       ),
     );
+    linkDirectory(
+      darwinStoreDir,
+      path.join(
+        rootDir,
+        "node_modules",
+        ".pnpm",
+        "@vendor+hasher@2.0.0",
+        "node_modules",
+        "@vendor",
+        "hasher-darwin-arm64",
+      ),
+    );
     linkDirectory(sharedStoreDir, path.join(rootDir, "apps", "api", "node_modules", "shared-core"));
     linkDirectory(sharedStoreDir, path.join(rootDir, "apps", "web", "node_modules", "shared-core"));
     linkDirectory(
@@ -347,7 +419,11 @@ describe("check-size production dependency and source accounting", () => {
       path.join(rootDir, "apps", "api", "node_modules", "@vendor", "hasher"),
     );
 
-    const packages = measureProductionDependencies(rootDir);
+    const packages = measureProductionDependencies(rootDir, {
+      platform: "linux",
+      arch: "x64",
+      libc: "glibc",
+    });
     expect(packages.map((pkg) => `${pkg.name}@${pkg.version}`)).toEqual([
       "@vendor/hasher-linux-x64@2.0.0",
       "shared-core@1.0.0",
@@ -363,8 +439,8 @@ describe("check-size production dependency and source accounting", () => {
         peerCodeBytes +
         hasherManifestBytes +
         hasherJsBytes +
-        nativeManifestBytes +
-        nativeBinBytes,
+        linuxManifestBytes +
+        linuxBinBytes,
     );
   });
 

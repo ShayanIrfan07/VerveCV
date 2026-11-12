@@ -232,7 +232,7 @@ Each phase is a separate branch and pull request. This branch is `feature/archit
 | 4 | `feature/rule-based-scoring` | Rules that are fully specified |
 | 5 | `feature/grammar-and-spelling` | Dictionary size check, then grammar rules |
 | 6 | `feature/evaluation-dashboard` | Score UI and history |
-| 7 | `feature/retention-and-hardening` | Jobs, 90-day deletion, rate limits |
+| 7 | `feature/retention-and-hardening` | Jobs, retryable R2 + DB physical deletion worker (release-blocking for `DELETE /resumes/:id` and 90-day expiry), rate limits |
 | 8 | `feature/pro-subscriptions` | Starts only after pricing, quotas, and a provider are approved |
 | 9 | `feature/release-readiness` | Release checklist |
 

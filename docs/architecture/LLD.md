@@ -218,10 +218,10 @@ Error body, used for every error response:
 | GET | `/me` | Current user |
 | POST | `/resumes/upload-intents` | Reserve a version and a signed upload |
 | POST | `/resumes/:resumeId/versions/:versionId/complete-upload` | Verify the stored object |
-| GET | `/resumes` | List the caller’s resumes |
+| GET | `/resumes` | List the caller’s resumes (paginated via `limit` and `offset`) |
 | GET | `/resumes/:id` | One resume, owned by the caller |
 | GET | `/resumes/:id/versions/:versionId/view-url` | Short-lived download URL |
-| DELETE | `/resumes/:id` | User-requested deletion |
+| DELETE | `/resumes/:id` | Soft-delete resume and enqueue `retention_tasks` (physical R2 deletion runs in Phase 7 worker) |
 | POST | `/evaluations` | Queue an authoritative evaluation |
 | GET | `/evaluations/:id` | Score, findings, status |
 | GET | `/evaluation-jobs/:id` | Job status |
@@ -315,7 +315,7 @@ Unique on (`user_id`, `normalized_term`).
 
 `id`, `resume_version_id`, `state`, `attempts`, `next_attempt_at`, `last_error_code`, `completed_at`
 
-States: `pending`, `running`, `succeeded`, `retryable_failure`. Object deletion and row deletion are idempotent. A missing object on a retry is success for that step.
+States: `pending`, `running`, `succeeded`, `retryable_failure`. Object deletion and row deletion are idempotent. A missing object on a retry is success for that step. Note: Phase 3 (`feature/resume-upload-and-parsing`) enqueues `pending` retention tasks and blocks access via `deleted_at` / `deletion_state = "delete_requested"`, while the background worker that executes physical R2 and derived-data deletion is a release-blocking dependency delivered in Phase 7 (`feature/retention-and-hardening`).
 
 ## 8. Upload and verification sequence
 

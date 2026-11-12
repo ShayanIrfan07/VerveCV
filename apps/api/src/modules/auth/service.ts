@@ -155,15 +155,12 @@ export async function refreshSession(
       return { kind: "unauthorized" as const };
     }
 
-    // Lock the user's session rows so concurrent refresh/logout operations on the
-    // same family serialize cleanly and cannot create an unrevoked child session.
     await tx
       .select({ id: sessions.id })
       .from(sessions)
       .where(eq(sessions.userId, current.userId))
       .for("update");
 
-    // Re-read current session state after acquiring family locks.
     const lockedCurrentRows = await tx
       .select()
       .from(sessions)
@@ -183,7 +180,6 @@ export async function refreshSession(
       return { kind: "unauthorized" as const };
     }
 
-    // Conditional atomic claim: only succeeds if the row is still unrevoked.
     const claimed = await tx
       .update(sessions)
       .set({ revokedAt: now })
@@ -258,8 +254,6 @@ export async function logoutSession(
     }
 
     for (const userId of userIds) {
-      // Lock all sessions of this user to serialize against concurrent refresh rotations
-      // on the same device lineage while leaving unrelated device families untouched.
       await tx
         .select({ id: sessions.id })
         .from(sessions)
@@ -423,7 +417,7 @@ function requirePassword(password: string): string {
   return password;
 }
 
-function currentPeriodStart(now = new Date()): string {
+export function currentPeriodStart(now = new Date()): string {
   const month = String(now.getUTCMonth() + 1).padStart(2, "0");
   return `${now.getUTCFullYear()}-${month}-01`;
 }

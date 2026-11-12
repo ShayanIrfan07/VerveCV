@@ -58,9 +58,15 @@ export function measureSourceBytes(rootDir, options = {}) {
   return total;
 }
 
-export function measureProductionDependencies(rootDir) {
+export function measureProductionDependencies(rootDir, options = {}) {
   const canonicalRoot = resolveExistingRealPath(rootDir, "workspace root");
-  const { workspacesByRealPath, workspacesByName } = discoverWorkspaces(canonicalRoot);
+  const targetPlatform = {
+    os: options.platform ?? process.platform,
+    cpu: options.arch ?? process.arch,
+    libc: options.libc ?? detectRuntimeLibc(),
+  };
+  const { workspacesByRealPath, workspacesByName, ignoredOptionalDeps } =
+    discoverWorkspaces(canonicalRoot);
   const visitedWorkspaces = new Set();
   const measuredByRealPath = new Map();
 
@@ -81,11 +87,14 @@ export function measureProductionDependencies(rootDir) {
         `workspace "${workspace.name}"`,
         true,
       );
-      visitTarget(target, depName);
+      visitTarget(target, depName, false);
     }
 
     const optionalDeps = asStringRecord(workspace.manifest.optionalDependencies);
     for (const [depName, specifier] of Object.entries(optionalDeps)) {
+      if (ignoredOptionalDeps.has(depName)) {
+        continue;
+      }
       const target = resolveOptionalDependency(
         workspace.realDir,
         depName,
@@ -96,12 +105,12 @@ export function measureProductionDependencies(rootDir) {
         false,
       );
       if (target !== null) {
-        visitTarget(target, depName);
+        visitTarget(target, depName, true);
       }
     }
   }
 
-  function visitTarget(realTargetDir, fallbackName) {
+  function visitTarget(realTargetDir, fallbackName, isOptionalBranch) {
     const matchedWorkspace = workspacesByRealPath.get(realTargetDir);
     if (matchedWorkspace !== undefined) {
       traverseWorkspace(matchedWorkspace);
@@ -113,9 +122,22 @@ export function measureProductionDependencies(rootDir) {
     }
 
     const manifest = readPackageManifest(realTargetDir);
-    const pkgName = typeof manifest.name === "string" && manifest.name.length > 0 ? manifest.name : fallbackName;
+    const pkgName =
+      typeof manifest.name === "string" && manifest.name.length > 0 ? manifest.name : fallbackName;
+
+    if (isOptionalBranch) {
+      if (ignoredOptionalDeps.has(pkgName)) {
+        return;
+      }
+      if (!matchesPlatformConstraints(manifest, targetPlatform)) {
+        return;
+      }
+    }
+
     const pkgVersion =
-      typeof manifest.version === "string" && manifest.version.length > 0 ? manifest.version : "unknown";
+      typeof manifest.version === "string" && manifest.version.length > 0
+        ? manifest.version
+        : "unknown";
     const pkgLabel = `${pkgName}@${pkgVersion}`;
 
     const entry = {
@@ -137,11 +159,14 @@ export function measureProductionDependencies(rootDir) {
         pkgLabel,
         false,
       );
-      visitTarget(child, depName);
+      visitTarget(child, depName, false);
     }
 
     const optionalDeps = asStringRecord(manifest.optionalDependencies);
     for (const [depName, specifier] of Object.entries(optionalDeps)) {
+      if (ignoredOptionalDeps.has(depName)) {
+        continue;
+      }
       const child = resolveOptionalDependency(
         realTargetDir,
         depName,
@@ -152,7 +177,7 @@ export function measureProductionDependencies(rootDir) {
         false,
       );
       if (child !== null) {
-        visitTarget(child, depName);
+        visitTarget(child, depName, true);
       }
     }
 
@@ -172,12 +197,16 @@ export function measureProductionDependencies(rootDir) {
         true,
       );
       if (child !== null) {
-        visitTarget(child, depName);
+        visitTarget(child, depName, false);
       }
     }
 
     for (const nestedPkg of listDirectNestedPackages(realTargetDir)) {
-      visitTarget(nestedPkg.realDir, nestedPkg.fallbackName);
+      const nestedIsOptional = Object.prototype.hasOwnProperty.call(
+        optionalDeps,
+        nestedPkg.fallbackName,
+      );
+      visitTarget(nestedPkg.realDir, nestedPkg.fallbackName, nestedIsOptional);
     }
   }
 
@@ -194,7 +223,11 @@ export function analyzeFootprint(options = {}) {
   const rootDir = options.rootDir ?? process.cwd();
   const limitBytes = options.limitBytes ?? LIMIT_BYTES;
   const sourceBytes = measureSourceBytes(rootDir, { trackedFiles: options.trackedFiles });
-  const dependencies = measureProductionDependencies(rootDir);
+  const dependencies = measureProductionDependencies(rootDir, {
+    platform: options.platform,
+    arch: options.arch,
+    libc: options.libc,
+  });
   const dependencyBytes = dependencies.reduce((total, item) => total + item.bytes, 0);
   const totalBytes = sourceBytes + dependencyBytes;
   const headroomBytes = limitBytes - totalBytes;
@@ -226,7 +259,9 @@ export function runSizeCheck(options = {}) {
   log("");
   log("20 largest production dependencies");
   for (const [index, item] of report.dependencies.slice(0, 20).entries()) {
-    log(`${String(index + 1).padStart(2, " ")}. ${formatBytes(item.bytes).padStart(16, " ")}  ${item.name}@${item.version}`);
+    log(
+      `${String(index + 1).padStart(2, " ")}. ${formatBytes(item.bytes).padStart(16, " ")}  ${item.name}@${item.version}`,
+    );
   }
 
   logSeparateArtifact(log, "Frontend production bundle", report.frontendBundleBytes);
@@ -268,7 +303,10 @@ function discoverWorkspaces(canonicalRoot) {
 
   const rootManifest = readPackageManifest(canonicalRoot);
   const rootEntry = {
-    name: typeof rootManifest.name === "string" && rootManifest.name.length > 0 ? rootManifest.name : "root",
+    name:
+      typeof rootManifest.name === "string" && rootManifest.name.length > 0
+        ? rootManifest.name
+        : "root",
     version: typeof rootManifest.version === "string" ? rootManifest.version : "0.0.0",
     realDir: canonicalRoot,
     manifest: rootManifest,
@@ -276,7 +314,7 @@ function discoverWorkspaces(canonicalRoot) {
   workspacesByRealPath.set(canonicalRoot, rootEntry);
   workspacesByName.set(rootEntry.name, rootEntry);
 
-  const patterns = readWorkspacePatterns(canonicalRoot, rootManifest);
+  const { patterns, ignoredOptionalDeps } = readWorkspaceConfig(canonicalRoot, rootManifest);
   const includedDirs = new Set();
   const excludedRelative = new Set();
 
@@ -318,45 +356,70 @@ function discoverWorkspaces(canonicalRoot) {
     workspacesByName.set(wsName, wsEntry);
   }
 
-  return { workspacesByRealPath, workspacesByName };
+  return { workspacesByRealPath, workspacesByName, ignoredOptionalDeps };
 }
 
-function readWorkspacePatterns(canonicalRoot, rootManifest) {
+function readWorkspaceConfig(canonicalRoot, rootManifest) {
+  const ignoredOptionalDeps = new Set();
+  if (
+    rootManifest.pnpm !== null &&
+    typeof rootManifest.pnpm === "object" &&
+    Array.isArray(rootManifest.pnpm.ignoredOptionalDependencies)
+  ) {
+    for (const item of rootManifest.pnpm.ignoredOptionalDependencies) {
+      if (typeof item === "string" && item.length > 0) {
+        ignoredOptionalDeps.add(item);
+      }
+    }
+  }
+
   const pnpmWorkspacePath = path.join(canonicalRoot, "pnpm-workspace.yaml");
   if (existsSync(pnpmWorkspacePath)) {
     const yamlContent = readFileSync(pnpmWorkspacePath, "utf8");
-    const parsed = parsePnpmWorkspacePackages(yamlContent);
-    if (parsed.length > 0) {
-      return parsed;
+    for (const ignored of parseYamlStringList(yamlContent, "ignoredOptionalDependencies")) {
+      ignoredOptionalDeps.add(ignored);
+    }
+    const parsedPackages = parseYamlStringList(yamlContent, "packages");
+    if (parsedPackages.length > 0) {
+      return { patterns: parsedPackages.map(normalizeSlashes), ignoredOptionalDeps };
     }
   }
 
   if (Array.isArray(rootManifest.workspaces)) {
-    return rootManifest.workspaces.filter((item) => typeof item === "string" && item.length > 0);
+    return {
+      patterns: rootManifest.workspaces.filter((item) => typeof item === "string" && item.length > 0),
+      ignoredOptionalDeps,
+    };
   }
   if (
     rootManifest.workspaces !== null &&
     typeof rootManifest.workspaces === "object" &&
     Array.isArray(rootManifest.workspaces.packages)
   ) {
-    return rootManifest.workspaces.packages.filter((item) => typeof item === "string" && item.length > 0);
+    return {
+      patterns: rootManifest.workspaces.packages.filter(
+        (item) => typeof item === "string" && item.length > 0,
+      ),
+      ignoredOptionalDeps,
+    };
   }
 
-  return ["apps/*", "packages/*"];
+  return { patterns: ["apps/*", "packages/*"], ignoredOptionalDeps };
 }
 
-function parsePnpmWorkspacePackages(yamlContent) {
-  const patterns = [];
-  let inPackagesSection = false;
+function parseYamlStringList(yamlContent, keyName) {
+  const values = [];
+  let inSection = false;
+  const headerRegex = new RegExp(`^${keyName}\\s*:\\s*$`, "u");
 
   for (const rawLine of yamlContent.split(/\r?\n/u)) {
     const trimmed = rawLine.trim();
     if (trimmed.length === 0 || trimmed.startsWith("#")) {
       continue;
     }
-    if (!inPackagesSection) {
-      if (/^packages\s*:\s*$/u.test(rawLine)) {
-        inPackagesSection = true;
+    if (!inSection) {
+      if (headerRegex.test(rawLine)) {
+        inSection = true;
       }
       continue;
     }
@@ -373,11 +436,11 @@ function parsePnpmWorkspacePackages(yamlContent) {
     }
     const unquoted = stripQuotes(stripInlineYamlComment(rawValue)).trim();
     if (unquoted.length > 0) {
-      patterns.push(normalizeSlashes(unquoted));
+      values.push(unquoted);
     }
   }
 
-  return patterns;
+  return values;
 }
 
 function stripInlineYamlComment(value) {
@@ -396,6 +459,57 @@ function stripQuotes(value) {
     return value.slice(1, -1);
   }
   return value;
+}
+
+function matchesPlatformConstraints(manifest, targetPlatform) {
+  if (!matchesConstraintArray(manifest.os, targetPlatform.os)) {
+    return false;
+  }
+  if (!matchesConstraintArray(manifest.cpu, targetPlatform.cpu)) {
+    return false;
+  }
+  if (targetPlatform.os === "linux" && !matchesConstraintArray(manifest.libc, targetPlatform.libc)) {
+    return false;
+  }
+  return true;
+}
+
+function matchesConstraintArray(rawField, currentValue) {
+  if (!Array.isArray(rawField) || rawField.length === 0) {
+    return true;
+  }
+  const entries = rawField.filter((item) => typeof item === "string" && item.length > 0);
+  if (entries.length === 0) {
+    return true;
+  }
+  const positives = entries.filter((item) => !item.startsWith("!"));
+  const negatives = entries.filter((item) => item.startsWith("!")).map((item) => item.slice(1));
+  if (negatives.includes(currentValue)) {
+    return false;
+  }
+  if (positives.length > 0 && !positives.includes(currentValue)) {
+    return false;
+  }
+  return true;
+}
+
+function detectRuntimeLibc() {
+  if (process.platform !== "linux") {
+    return "glibc";
+  }
+  const report = process.report?.getReport?.();
+  if (
+    report &&
+    typeof report === "object" &&
+    "header" in report &&
+    report.header &&
+    typeof report.header === "object" &&
+    "glibcVersionRuntime" in report.header &&
+    typeof report.header.glibcVersionRuntime === "string"
+  ) {
+    return "glibc";
+  }
+  return "musl";
 }
 
 function expandWorkspacePattern(rootDir, rawPattern) {
@@ -586,7 +700,10 @@ function resolveNestedPackageDir(candidatePath, fallbackName) {
   if (stats === null) {
     return null;
   }
-  const realCandidate = resolveExistingRealPath(candidatePath, `nested dependency "${fallbackName}"`);
+  const realCandidate = resolveExistingRealPath(
+    candidatePath,
+    `nested dependency "${fallbackName}"`,
+  );
   if (!existsSync(path.join(realCandidate, "package.json"))) {
     return null;
   }

@@ -8,6 +8,13 @@
       "when": 1794478248406,
       "tag": "0000_square_diamondback",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794480015385,
+      "tag": "0001_omniscient_bromley",
+      "breakpoints": true
     }
   ]
 }

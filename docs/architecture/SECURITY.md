@@ -98,7 +98,7 @@ Server-side parsing does not run unbounded on the request thread. It runs under 
 
 Each resume version has `expires_at` 90 days after creation. A retention task deletes the R2 object, extracted content, preview data, findings, and other personal evaluation fields for that version. The task is safe to retry. Audit events record the event type and the target id, not the file contents.
 
-User-requested delete uses the same task path and may run before day 90.
+User-requested delete uses the same task path and may run before day 90. Until Phase 7 (`feature/retention-and-hardening`) ships the retryable deletion worker, `DELETE /api/v1/resumes/:id` only performs logical access revocation (`deleted_at`, `deletion_state = "delete_requested"`) and enqueues `retention_tasks`; completing physical R2 object and derived-data deletion in Phase 7 is a release blocker for Version 1.
 
 Neon point-in-time recovery and R2 noncurrent-object retention can keep bytes after the application delete. The product copy must say that application-level deletion is within 90 days, and it must describe provider backup retention only after those provider settings are known. Decision 13 and additional item A8 cover that disclosure.
 

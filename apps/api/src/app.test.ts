@@ -13,13 +13,16 @@ function testConfig(overrides: Partial<ReturnType<typeof loadConfig>> = {}) {
   };
 }
 
-describe("health endpoints", () => {
-  it("reports the process as live", async () => {
+describe("health and HTTP security headers", () => {
+  it("reports the process as live and sets defensive response headers", async () => {
     const app = await buildApp({ config: testConfig(), db: null });
     const response = await app.inject({ method: "GET", url: "/api/v1/health/live" });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ status: "live" });
     expect(response.headers["x-request-id"]).toMatch(UUID_V4_PATTERN);
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["x-frame-options"]).toBe("DENY");
     await app.close();
   });
 

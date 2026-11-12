@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   date,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -90,34 +91,47 @@ export const usageCounters = pgTable(
   ],
 );
 
-export const resumes = pgTable("resumes", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  title: text("title").notNull(),
-  candidateType: text("candidate_type"),
-  createdAt: timestamps.createdAt,
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  deletedAt: timestamp("deleted_at", { withTimezone: true }),
-});
+export const resumes = pgTable(
+  "resumes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    candidateType: text("candidate_type"),
+    createdAt: timestamps.createdAt,
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (table) => [index("resumes_user_id_idx").on(table.userId)],
+);
 
-export const resumeVersions = pgTable("resume_versions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  resumeId: uuid("resume_id")
-    .notNull()
-    .references(() => resumes.id, { onDelete: "cascade" }),
-  versionNumber: integer("version_number").notNull(),
-  originalFilename: text("original_filename").notNull(),
-  mimeType: text("mime_type").notNull(),
-  sizeBytes: integer("size_bytes").notNull(),
-  sha256: text("sha256").notNull(),
-  objectKey: text("object_key").notNull(),
-  parserVersion: text("parser_version"),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  deletionState: text("deletion_state").notNull(),
-  createdAt: timestamps.createdAt,
-});
+export const resumeVersions = pgTable(
+  "resume_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    resumeId: uuid("resume_id")
+      .notNull()
+      .references(() => resumes.id, { onDelete: "cascade" }),
+    versionNumber: integer("version_number").notNull(),
+    originalFilename: text("original_filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    sha256: text("sha256").notNull(),
+    objectKey: text("object_key").notNull(),
+    parserVersion: text("parser_version"),
+    verificationState: text("verification_state").notNull().default("pending"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    deletionState: text("deletion_state").notNull(),
+    createdAt: timestamps.createdAt,
+  },
+  (table) => [
+    uniqueIndex("resume_versions_resume_version_unique").on(table.resumeId, table.versionNumber),
+    uniqueIndex("resume_versions_object_key_unique").on(table.objectKey),
+    index("resume_versions_resume_id_idx").on(table.resumeId),
+  ],
+);
 
 export const evaluationJobs = pgTable(
   "evaluation_jobs",

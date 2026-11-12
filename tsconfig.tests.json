@@ -8,6 +8,7 @@
     "apps/api/src/**/*.ts",
     "packages/contracts/src/**/*.ts",
     "packages/evaluation/src/**/*.ts",
+    "packages/documents/src/**/*.ts",
     "scripts/**/*.ts",
     "scripts/**/*.d.mts"
   ]
