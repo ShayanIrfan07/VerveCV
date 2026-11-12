@@ -11,14 +11,31 @@ const REDACT_PATHS = [
   "req.body.refreshToken",
 ];
 
+export const MAX_REQUEST_ID_LENGTH = 128;
+const SAFE_REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export function resolveRequestId(header: string | string[] | undefined): string {
+  if (
+    typeof header === "string" &&
+    header.length >= 1 &&
+    header.length <= MAX_REQUEST_ID_LENGTH &&
+    SAFE_REQUEST_ID_PATTERN.test(header)
+  ) {
+    return header;
+  }
+  return randomUUID();
+}
+
 export function buildApp(config: Pick<AppConfig, "databaseUrl" | "logger">): FastifyInstance {
   const app = Fastify({
     logger: config.logger ? { redact: REDACT_PATHS } : false,
-    requestIdHeader: "x-request-id",
-    genReqId: (request) => {
-      const header = request.headers["x-request-id"];
-      return typeof header === "string" && header.length > 0 ? header : randomUUID();
-    },
+    requestIdHeader: false,
+    genReqId: (request) => resolveRequestId(request.headers["x-request-id"]),
+  });
+
+  app.addHook("onSend", (_request, reply, payload, done) => {
+    reply.header("x-request-id", _request.id);
+    done(null, payload);
   });
 
   app.setNotFoundHandler((request, reply) => {

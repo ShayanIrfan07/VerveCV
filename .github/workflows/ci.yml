@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -43,4 +45,19 @@ jobs:
         run: pnpm size:check
 
       - name: Check diff whitespace
-        run: git diff --check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git diff --check "$PR_BASE_SHA...$PR_HEAD_SHA"
+          elif [ -n "$PUSH_BEFORE_SHA" ] && [ "$PUSH_BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            git diff --check "$PUSH_BEFORE_SHA..$PUSH_AFTER_SHA"
+          else
+            EMPTY_TREE="$(git hash-object -t tree /dev/null)"
+            git diff --check "$EMPTY_TREE..$PUSH_AFTER_SHA"
+          fi
+          git diff --check

@@ -2,7 +2,7 @@
 
 Make every bullet count.
 
-VerveCV is a multi-user resume evaluation product. Version 1 scores resumes with a deterministic, versioned rubric. It does not call a language model, an embeddings service, or an external grammar API.
+VerveCV is a multi-user, rule-based resume evaluator, not an AI-assisted platform. Version 1 is fully rule-based and evaluates PDF and DOCX resumes against a deterministic, versioned 100-point rubric, with no retrieval-augmented generation (RAG), large language model (LLM), embeddings service, or external AI or grammar API.
 
 Phase 0 records the architecture and the open scoring decisions. Phase 1 is the workspace shell: a Vite frontend, a Fastify API, and shared packages. Resume upload and scoring are not in this build.
 
