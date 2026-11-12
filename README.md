@@ -21,7 +21,9 @@ corepack pnpm build
 corepack pnpm size:check
 ```
 
-The API listens on `0.0.0.0:$PORT` (`PORT` defaults to 3000). `GET /api/v1/health/live` reports that the process is up. `GET /api/v1/health/ready` stays unavailable until the database check exists.
+The API listens on `0.0.0.0:$PORT` (`PORT` defaults to 3000). `GET /api/v1/health/live` reports that the process is up. `GET /api/v1/health/ready` checks the database when `DATABASE_URL` is set.
+
+`COOKIE_SECRET` must be at least 32 characters before the API process will start. Registration creates a Free subscription and does not start a session. Login sets HttpOnly cookies. Mutating `/api/v1` requests must send an `Origin` listed in `ALLOWED_ORIGINS`. The session lifetime defaults to 12 hours and remains an operational setting until it is approved.
 
 ## Documents
 

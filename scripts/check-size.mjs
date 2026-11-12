@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 const LIMIT_BYTES = 104_857_600;
 const ROOT = process.cwd();
+const workspaceDeps = readWorkspaceDependencyNames();
 
 const sourceBytes = measureSourceBytes();
 const dependencies = measureProductionDependencies();
@@ -78,17 +79,62 @@ function collectDependencies(dependencies, seenPaths, packages) {
     return;
   }
   for (const [name, dependency] of Object.entries(dependencies)) {
+    if (dependency.optional === true || isDevelopmentOnly(name)) {
+      continue;
+    }
     const packagePath = dependency.path;
-    if (typeof packagePath === "string" && isInstalledPackage(packagePath) && !seenPaths.has(packagePath)) {
+    if (
+      typeof packagePath === "string" &&
+      isInstalledPackage(packagePath) &&
+      !seenPaths.has(packagePath)
+    ) {
+      let packageRoot;
+      try {
+        packageRoot = realpathSync(packagePath);
+      } catch {
+        continue;
+      }
       seenPaths.add(packagePath);
       packages.push({
         name,
         version: dependency.version ?? "unknown",
-        bytes: directorySize(realpathSync(packagePath)),
+        bytes: directorySize(packageRoot),
       });
     }
     collectDependencies(dependency.dependencies, seenPaths, packages);
   }
+}
+
+function isDevelopmentOnly(name) {
+  return workspaceDeps.dev.has(name) && !workspaceDeps.prod.has(name);
+}
+
+function readWorkspaceDependencyNames() {
+  const prod = new Set();
+  const dev = new Set();
+  for (const file of ["package.json", ...workspacePackageFiles()]) {
+    const json = JSON.parse(readFileSync(path.join(ROOT, file), "utf8"));
+    for (const name of Object.keys(json.dependencies ?? {})) {
+      prod.add(name);
+    }
+    for (const name of Object.keys(json.devDependencies ?? {})) {
+      dev.add(name);
+    }
+  }
+  return { prod, dev };
+}
+
+function workspacePackageFiles() {
+  const files = [];
+  for (const group of ["apps", "packages"]) {
+    const directory = path.join(ROOT, group);
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        files.push(path.join(group, entry.name, "package.json"));
+      }
+    }
+  }
+  return files;
 }
 
 function isInstalledPackage(packagePath) {
