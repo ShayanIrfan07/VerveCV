@@ -14,5 +14,9 @@
   },
   "devDependencies": {
     "vitest": "^4.0.8"
+  },
+  "dependencies": {
+    "dictionary-en": "4.0.0",
+    "nspell": "2.1.5"
   }
 }

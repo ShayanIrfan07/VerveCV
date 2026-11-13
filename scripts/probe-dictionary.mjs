@@ -1,15 +1,41 @@
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const root = process.argv[2];
-if (!root) {
-  throw new Error("Pass the directory that contains node_modules/nspell and node_modules/dictionary-en.");
+const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(scriptDir, "..");
+const defaultLookupBase = path.join(repoRoot, "packages", "evaluation", "package.json");
+
+const customRoot = process.argv[2];
+const lookupFrom = customRoot
+  ? path.join(path.resolve(customRoot), "package.json")
+  : defaultLookupBase;
+const requireFromTarget = createRequire(lookupFrom);
+
+function packageDirectory(pkgName, resolver = requireFromTarget) {
+  try {
+    const entry = resolver.resolve(`${pkgName}/package.json`);
+    return path.dirname(realpathSync(entry));
+  } catch {
+    const mainEntry = resolver.resolve(pkgName);
+    let dir = path.dirname(realpathSync(mainEntry));
+    while (dir !== path.dirname(dir)) {
+      try {
+        statSync(path.join(dir, "package.json"));
+        return dir;
+      } catch {
+        dir = path.dirname(dir);
+      }
+    }
+    throw new Error(`Unable to locate package root for ${pkgName}`);
+  }
 }
 
 function directoryBytes(directory) {
   let total = 0;
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.name === "node_modules") continue;
     const full = path.join(directory, entry.name);
     if (entry.isDirectory()) total += directoryBytes(full);
     else if (entry.isFile()) total += statSync(full).size;
@@ -17,82 +43,55 @@ function directoryBytes(directory) {
   return total;
 }
 
-const modules = ["nspell", "dictionary-en", "is-buffer"];
+const corpusPath = path.join(scriptDir, "fixtures", "technical-probe-corpus.json");
+const corpus = JSON.parse(readFileSync(corpusPath, "utf8"));
+
+const modules = [
+  ["nspell", requireFromTarget],
+  ["dictionary-en", requireFromTarget],
+];
 const sizes = {};
-for (const name of modules) {
-  sizes[name] = directoryBytes(path.join(root, "node_modules", name));
+for (const [name, resolver] of modules) {
+  sizes[name] = directoryBytes(packageDirectory(name, resolver));
 }
+const nspellResolver = createRequire(path.join(packageDirectory("nspell", requireFromTarget), "package.json"));
+sizes["is-buffer"] = directoryBytes(packageDirectory("is-buffer", nspellResolver));
 sizes.total = Object.values(sizes).reduce((sum, value) => sum + value, 0);
 
-const dictionary = (await import(pathToFileURL(path.join(root, "node_modules", "dictionary-en", "index.js")).href)).default;
-const nspell = (await import(pathToFileURL(path.join(root, "node_modules", "nspell", "lib", "index.js")).href)).default;
-const spell = nspell(dictionary);
-const terms = [
-  "TypeScript",
-  "JavaScript",
-  "PostgreSQL",
-  "Kubernetes",
-  "GraphQL",
-  "Fastify",
-  "Drizzle",
-  "MongoDB",
-  "Redis",
-  "DevOps",
-  "OAuth",
-  "webpack",
-  "Next.js",
-  "Node.js",
-  "gRPC",
-  "Terraform",
-  "Docker",
-  "Nginx",
-  "Elasticsearch",
-  "SaaS",
-  "JWT",
-  "NoSQL",
-  "MySQL",
-  "SQLite",
-  "Firestore",
-  "DynamoDB",
-  "WebSocket",
-  "microservices",
-  "serverless",
-  "frontend",
-  "backend",
-  "fullstack",
-  "ReactJS",
-  "pnpm",
-  "npm",
-  "GitHub",
-  "LinkedIn",
-  "async",
-  "regex",
-  "localhost",
-  "JSON",
-  "YAML",
-  "ORM",
-  "SSR",
-  "SEO",
-  "KPI",
-  "OKR",
-  "iOS",
-  "macOS",
-  "protobuf",
-  "Ansible",
-  "Jenkins",
-  "Grafana",
-  "Prometheus",
-  "Kibana",
-  "Dockerfile",
-  "IAM",
-  "CRUD",
-  "B2B",
-  "UX",
-  "UI",
-  "APIs",
-];
-const unique = [...new Set(terms)];
-const unknown = unique.filter((term) => spell.correct(term) !== true);
-const controls = ["color", "managed", "developed", "experience", "university"];
-const controlResults = Object.fromEntries(controls.map((word) => [word, spell.correct(word) === true]));
-process.stdout.write(`${JSON.stringify({ sizes, unknown, unknownCount: unknown.length, termCount: unique.length, controlResults })}\n`);
+const dictionaryDir = packageDirectory("dictionary-en");
+const aff = readFileSync(path.join(dictionaryDir, "index.aff"));
+const dic = readFileSync(path.join(dictionaryDir, "index.dic"));
+
+const nspellEntry = path.join(packageDirectory("nspell"), "lib", "index.js");
+const nspell = (await import(pathToFileURL(nspellEntry).href)).default;
+const rawSpell = nspell(aff, dic);
+
+const evalDistPath = path.join(repoRoot, "packages", "evaluation", "dist", "index.js");
+const evaluation = await import(pathToFileURL(evalDistPath).href);
+const allowlistedSpell = evaluation.createSpellCheckerFromDictionary({ aff, dic });
+
+const uniqueTerms = [...new Set(corpus.technicalTerms)];
+const rawUnknown = uniqueTerms.filter((term) => rawSpell.correct(term) !== true);
+const allowlistedUnknown = uniqueTerms.filter((term) => allowlistedSpell.correct(term) !== true);
+
+const controlResults = Object.fromEntries(
+  corpus.controlEnglishWords.map((word) => [word, allowlistedSpell.correct(word) === true]),
+);
+const misspellingResults = Object.fromEntries(
+  corpus.knownMisspellings.map((word) => [word, allowlistedSpell.correct(word) === false]),
+);
+
+process.stdout.write(
+  `${JSON.stringify({
+    corpusVersion: corpus.version,
+    technicalAllowlistVersion: evaluation.TECHNICAL_ALLOWLIST_VERSION,
+    sizes,
+    termCount: uniqueTerms.length,
+    rawUnknownCount: rawUnknown.length,
+    rawUnknown,
+    allowlistedUnknownCount: allowlistedUnknown.length,
+    allowlistedUnknown,
+    controlResults,
+    misspellingResults,
+  })}\n`,
+);

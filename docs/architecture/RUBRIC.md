@@ -295,7 +295,7 @@ Specified constraints:
 - Return UTF-16 offsets.
 - Do not also count a punctuation error in this criterion (item A9).
 
-No language-model grammar call and no LanguageTool service are used. Phase 5 measured `nspell@2.1.5` with `dictionary-en@4.0.0` at 622,389 unpacked bytes. The same measurement found 45 of 62 resume technical terms unknown to that dictionary. The pair is not installed. An empty or unapproved dictionary means this criterion is withheld. Repeated-word, agreement, article, preposition, and sentence rules are not scored while distinctness and punctuation ownership remain open (ADR 0001, item A9).
+No language-model grammar call and no LanguageTool service are used. Phase 5 installs `nspell@2.1.5` with `dictionary-en@4.0.0` (622,389 unpacked bytes) paired with a versioned technical-term allowlist (`tech-allowlist-2026-11-13-v1`) and conservative proper-noun and resume-fragment handling so technical vocabulary is not false-flagged. Deterministic repeated-word, article, subject-verb agreement, verb-form, preposition, spelling, and separate punctuation rules surface validated informational findings with UTF-16 offsets, while numeric grammar and punctuation scores stay withheld (`OPEN_DECISION`) until distinct-error counting and grammar-vs-punctuation precedence are approved (ADR 0001, item A9).
 
 The source’s “AI generate” control is not a Version 1 feature.
 

@@ -1,5 +1,5 @@
 import { uniqueSkillScore } from "./bands.js";
-import { grammarAndSpellingRule } from "./grammar.js";
+import { grammarAndSpellingRule, punctuationRule, type SpellChecker } from "./grammar.js";
 import type {
   EvaluationFinding,
   EvidenceReference,
@@ -20,6 +20,7 @@ export interface EvaluationOptions {
   candidateName: string | null;
   jobDescription: string | null;
   ignoredTerms?: string[];
+  spellChecker?: SpellChecker | null;
 }
 
 export interface JdMatch {
@@ -70,7 +71,6 @@ const WITHHELD_RULES: Array<[string, number, RuleWithholdReasonCode]> = [
   ["reverse-chronology", CRITERION_MAXIMA.reverseChronology, "OPEN_DECISION"],
   ["formatting-consistency", CRITERION_MAXIMA.formattingConsistency, "OPEN_DECISION"],
   ["readability", CRITERION_MAXIMA.readability, "OPEN_DECISION"],
-  ["punctuation", CRITERION_MAXIMA.punctuation, "OPEN_DECISION"],
   ["entry-details", CRITERION_MAXIMA.entryDetails, "OPEN_DECISION"],
   ["education-details", CRITERION_MAXIMA.educationDetails, "OPEN_DECISION"],
   ["skills-ratio", CRITERION_MAXIMA.skillsRatio, "OPEN_DECISION"],
@@ -81,7 +81,12 @@ export function evaluate(document: ResumeDocument, options: EvaluationOptions): 
   const criteria = [
     ...bulletCriteria(document),
     filenameRule(document, options.candidateName),
-    grammarAndSpellingRule(),
+    grammarAndSpellingRule(document, {
+      candidateName: options.candidateName,
+      ignoredTerms: options.ignoredTerms,
+      spellChecker: options.spellChecker,
+    }),
+    punctuationRule(document),
     ...WITHHELD_RULES.map(([ruleId, maxScore, reasonCode]) => withheld(ruleId, maxScore, reasonCode)),
     requiredSections(document, options.candidateType),
     contactInformation(document, options.candidateName),
