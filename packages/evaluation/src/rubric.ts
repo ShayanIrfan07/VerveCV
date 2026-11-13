@@ -1,4 +1,4 @@
-/** Provisional rubric. Weights are locked. Scoring rules are not implemented in this package yet. */
+/** Provisional rubric. Weights are locked. Open decisions stay withheld. */
 export const RUBRIC_VERSION = "rubric-2026-11-12-provisional";
 
 export const CATEGORY_MAXIMA = {

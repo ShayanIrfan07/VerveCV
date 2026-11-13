@@ -295,7 +295,7 @@ Specified constraints:
 - Return UTF-16 offsets.
 - Do not also count a punctuation error in this criterion (item A9).
 
-No language-model grammar call and no LanguageTool service are used. `nspell` with `dictionary-en` is a size-acceptable candidate (0.59 MiB unpacked, measured 2026-11-12) and is not installed until Phase 5 checks false positives. An empty or unapproved dictionary means this criterion is withheld.
+No language-model grammar call and no LanguageTool service are used. Phase 5 installs `nspell@2.1.5` with `dictionary-en@4.0.0` (622,389 unpacked bytes) paired with a versioned technical-term allowlist (`tech-allowlist-2026-11-13-v1`) and conservative proper-noun and resume-fragment handling so technical vocabulary is not false-flagged. Deterministic repeated-word, article, subject-verb agreement, verb-form, preposition, spelling, and separate punctuation rules surface validated informational findings with UTF-16 offsets, while numeric grammar and punctuation scores stay withheld (`OPEN_DECISION`) until distinct-error counting and grammar-vs-punctuation precedence are approved (ADR 0001, item A9).
 
 The source’s “AI generate” control is not a Version 1 feature.
 

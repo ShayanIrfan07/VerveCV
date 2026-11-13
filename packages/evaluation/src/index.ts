@@ -32,5 +32,15 @@ export {
   skillsRatioScore,
   uniqueSkillScore,
 } from "./bands.js";
+export {
+  createSpellCheckerFromDictionary,
+  DICTIONARY_CANDIDATE,
+  getDefaultSpellChecker,
+  grammarAndSpellingRule,
+  isTechnicalTerm,
+  punctuationRule,
+  TECHNICAL_ALLOWLIST_VERSION,
+} from "./grammar.js";
+export type { DictionarySource, GrammarEvaluationOptions, SpellChecker } from "./grammar.js";
 export { aggregate, clamp, evaluate, SKILL_ALIAS_VERSION } from "./evaluate.js";
 export type { CandidateType, EvaluationOptions, EvaluationResult, JdMatch, PenaltyAssessment } from "./evaluate.js";
