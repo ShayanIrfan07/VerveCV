@@ -13,6 +13,7 @@
     "@node-rs/argon2": "^2.2.2",
     "@vervecv/contracts": "workspace:*",
     "@vervecv/documents": "workspace:*",
+    "@vervecv/evaluation": "workspace:*",
     "aws4fetch": "1.0.20",
     "drizzle-orm": "^0.45.4",
     "fastify": "^5.6.2",

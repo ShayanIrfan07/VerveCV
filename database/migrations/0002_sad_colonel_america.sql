@@ -1,0 +1,1 @@
+ALTER TABLE "evaluation_jobs" ADD COLUMN "request_fingerprint" text;

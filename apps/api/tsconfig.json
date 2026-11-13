@@ -9,5 +9,9 @@
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts"],
-  "references": [{ "path": "../../packages/contracts" }, { "path": "../../packages/documents" }]
+  "references": [
+    { "path": "../../packages/contracts" },
+    { "path": "../../packages/documents" },
+    { "path": "../../packages/evaluation" }
+  ]
 }

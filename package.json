@@ -10,7 +10,7 @@
     "dev:api": "corepack pnpm --filter @vervecv/api dev",
     "dev:web": "corepack pnpm --filter @vervecv/web dev",
     "lint": "eslint .",
-    "typecheck": "tsc -b --pretty false && tsc -b apps/web --pretty false && tsc -p tsconfig.tests.json --pretty false",
+    "typecheck": "tsc -b --pretty false && tsc -b apps/web --pretty false && tsc -p apps/web/tsconfig.test.json --noEmit --pretty false && tsc -p tsconfig.tests.json --pretty false",
     "test": "vitest run",
     "db:check": "corepack pnpm --filter @vervecv/api exec drizzle-kit check --config ../../drizzle.config.ts",
     "build": "tsc -b --pretty false && corepack pnpm --filter @vervecv/web build",

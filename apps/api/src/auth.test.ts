@@ -71,6 +71,11 @@ describe("database migrations", () => {
     );
     expect(cols.rows).toHaveLength(1);
 
+    const fpCols = await client.query<{ column_name: string }>(
+      "select column_name from information_schema.columns where table_name = 'evaluation_jobs' and column_name = 'request_fingerprint'",
+    );
+    expect(fpCols.rows).toHaveLength(1);
+
     await migrate(pgliteDb, { migrationsFolder: path.resolve("database/migrations") });
     await client.close();
   });

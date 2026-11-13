@@ -9,6 +9,7 @@ import type { Database } from "./infrastructure/db/client.js";
 import type { ObjectStorage } from "./infrastructure/storage/memory.js";
 import type { SlidingWindowRateLimiter } from "./modules/auth/rate-limit.js";
 import { registerAuthRoutes } from "./modules/auth/routes.js";
+import { registerEvaluationRoutes } from "./modules/evaluations/routes.js";
 import type { ParseGate } from "./modules/uploads/parse-gate.js";
 import { registerUploadRoutes } from "./modules/uploads/routes.js";
 
@@ -123,6 +124,12 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   await registerAuthRoutes(app, deps);
   await registerUploadRoutes(app, {
+    config,
+    db: deps.db,
+    storage: deps.storage ?? null,
+    parseGate: deps.parseGate ?? null,
+  });
+  await registerEvaluationRoutes(app, {
     config,
     db: deps.db,
     storage: deps.storage ?? null,
