@@ -1,5 +1,5 @@
 import { MAX_SIGNED_URL_TTL_SECONDS } from "./infrastructure/storage/r2.js";
-import type { AuthRateLimits } from "./modules/auth/rate-limit.js";
+import type { AuthRateLimits, RateLimitRule } from "./modules/auth/rate-limit.js";
 import {
   DEFAULT_PARSE_MAX_QUEUE,
   DEFAULT_PARSE_QUEUE_TIMEOUT_MS,
@@ -26,6 +26,9 @@ export interface AppConfig {
   parseQueueTimeoutMs: number;
   maxPendingUploadsPerUser: number;
   uploadIntentGraceSeconds: number;
+  uploadRateLimit: RateLimitRule | null;
+  evaluateRateLimit: RateLimitRule | null;
+  retentionPollMs: number | null;
   r2: {
     accountId: string;
     accessKeyId: string;
@@ -147,6 +150,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       DEFAULT_UPLOAD_INTENT_GRACE_SECONDS,
       "UPLOAD_INTENT_GRACE_SECONDS",
     ),
+    uploadRateLimit: readOptionalRateLimit(env, "UPLOAD_RATE_LIMIT_MAX", "UPLOAD_RATE_LIMIT_WINDOW_SECONDS"),
+    evaluateRateLimit: readOptionalRateLimit(env, "EVALUATE_RATE_LIMIT_MAX", "EVALUATE_RATE_LIMIT_WINDOW_SECONDS"),
+    retentionPollMs: readOptionalPositiveInt(env["RETENTION_POLL_MS"], "RETENTION_POLL_MS"),
     r2: readR2(env),
   };
 }
@@ -206,6 +212,23 @@ function readSignedUrlTtl(value: string | undefined): number | null {
     );
   }
   return parsed;
+}
+
+function readOptionalRateLimit(env: NodeJS.ProcessEnv, maxName: string, windowName: string): RateLimitRule | null {
+  const maxValue = env[maxName];
+  const windowValue = env[windowName];
+  const maxMissing = maxValue === undefined || maxValue.trim() === "";
+  const windowMissing = windowValue === undefined || windowValue.trim() === "";
+  if (maxMissing && windowMissing) {
+    return null;
+  }
+  if (maxMissing || windowMissing) {
+    throw new Error(`${maxName} and ${windowName} must be set together`);
+  }
+  return {
+    max: readPositiveInt(maxValue, 1, maxName),
+    windowMs: readPositiveInt(windowValue, 1, windowName) * 1000,
+  };
 }
 
 function readR2(env: NodeJS.ProcessEnv): AppConfig["r2"] {

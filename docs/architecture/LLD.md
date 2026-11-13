@@ -221,7 +221,7 @@ Error body, used for every error response:
 | GET | `/resumes` | List the caller’s resumes (paginated via `limit` and `offset`) |
 | GET | `/resumes/:id` | One resume, owned by the caller |
 | GET | `/resumes/:id/versions/:versionId/view-url` | Short-lived download URL |
-| DELETE | `/resumes/:id` | Soft-delete resume and enqueue `retention_tasks` (physical R2 deletion runs in Phase 7 worker) |
+| DELETE | `/resumes/:id` | Revoke access, enqueue `retention_tasks`, and delete the stored object plus derived evaluation rows |
 | POST | `/evaluations` | Queue an authoritative evaluation |
 | GET | `/evaluations/:id` | Score, findings, status |
 | GET | `/evaluation-jobs/:id` | Job status |
@@ -315,7 +315,7 @@ Unique on (`user_id`, `normalized_term`).
 
 `id`, `resume_version_id`, `state`, `attempts`, `next_attempt_at`, `last_error_code`, `completed_at`
 
-States: `pending`, `running`, `succeeded`, `retryable_failure`. Object deletion and row deletion are idempotent. A missing object on a retry is success for that step. Note: Phase 3 (`feature/resume-upload-and-parsing`) enqueues `pending` retention tasks and blocks access via `deleted_at` / `deletion_state = "delete_requested"`, while the background worker that executes physical R2 and derived-data deletion is a release-blocking dependency delivered in Phase 7 (`feature/retention-and-hardening`).
+States: `pending`, `running`, `succeeded`, `retryable_failure`. Object deletion and row deletion are idempotent. A missing object on a retry is success for that step. Delete and expiry enqueue a task, then the in-process worker removes the stored object and derived evaluation rows. A storage failure stays `retryable_failure`. No attempt cap is stored, because ADR 0001 item A7 has not approved one.
 
 ## 8. Upload and verification sequence
 

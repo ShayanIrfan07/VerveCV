@@ -23,6 +23,10 @@ describe("health and HTTP security headers", () => {
     expect(response.headers["referrer-policy"]).toBe("no-referrer");
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
     expect(response.headers["x-frame-options"]).toBe("DENY");
+    expect(response.headers["content-security-policy"]).toBe(
+      "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+    );
+    expect(String(response.headers["content-security-policy"])).not.toContain("lottie");
     await app.close();
   });
 

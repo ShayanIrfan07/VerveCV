@@ -634,14 +634,9 @@ export async function createViewUrl(
 }
 
 /**
- * Logical soft-deletion + retention task enqueue.
- *
- * IMPORTANT (Phase 3 boundary / release-blocking dependency for Phase 7):
- * This operation immediately revokes read, download-URL, and verification access by marking
- * `resumes.deleted_at` and `resume_versions.deletion_state = "delete_requested"`, and records
- * `retention_tasks` (`state = "pending"`). Physical deletion of R2 objects, 90-day expiry sweeps,
- * and derived evaluation/finding purges are NOT yet executed in Phase 3; they are a release-blocking
- * dependency assigned to Phase 7 (`feature/retention-and-hardening`).
+ * Revoke access and enqueue a retention task. The deletion route then runs the retention
+ * worker, which removes the stored object and derived evaluation rows. A failed object
+ * delete stays retryable. No attempt cap is applied until ADR 0001 item A7 approves one.
  */
 export async function deleteResume(db: Database, userId: string, resumeId: string) {
   const now = new Date();
@@ -680,7 +675,7 @@ export async function deleteResume(db: Database, userId: string, resumeId: strin
         .where(
           and(
             inArray(retentionTasks.resumeVersionId, versionIds),
-            inArray(retentionTasks.state, ["pending", "running"]),
+            inArray(retentionTasks.state, ["pending", "running", "retryable_failure"]),
           ),
         );
       const alreadyQueued = new Set(existingTasks.map((task) => task.resumeVersionId));

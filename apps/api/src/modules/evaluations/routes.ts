@@ -5,6 +5,7 @@ import { errorBody } from "../../http.js";
 import type { Database } from "../../infrastructure/db/client.js";
 import type { ObjectStorage } from "../../infrastructure/storage/memory.js";
 import { readSignedCookie, SESSION_COOKIE } from "../auth/cookies.js";
+import { type RateLimitRule, SlidingWindowRateLimiter } from "../auth/rate-limit.js";
 import { readSessionUser } from "../auth/service.js";
 import type { ParseGate } from "../uploads/parse-gate.js";
 import { EvaluationError } from "./errors.js";
@@ -58,6 +59,7 @@ export async function registerEvaluationRoutes(
     db: Database | null;
     storage: ObjectStorage | null;
     parseGate: ParseGate | null;
+    rateLimiter: SlidingWindowRateLimiter;
   },
 ): Promise<void> {
   app.post("/api/v1/evaluations", { schema: createSchema }, async (request, reply) => {
@@ -76,6 +78,9 @@ export async function registerEvaluationRoutes(
 
     try {
       const user = await requireUser(deps.db, request);
+      if (!allowRateLimit(deps.rateLimiter, `evaluate:user:${user.id}`, deps.config.evaluateRateLimit, reply, request.id)) {
+        return;
+      }
       const ready = requireReady(deps);
       const body = request.body as {
         resumeVersionId: string;
@@ -155,6 +160,25 @@ async function requireUser(db: Database | null, request: FastifyRequest) {
     throw new EvaluationError(401, "UNAUTHORIZED", "Unauthorized");
   }
   return user;
+}
+
+function allowRateLimit(
+  limiter: SlidingWindowRateLimiter,
+  key: string,
+  rule: RateLimitRule | null,
+  reply: FastifyReply,
+  requestId: string,
+): boolean {
+  if (!rule) {
+    return true;
+  }
+  const decision = limiter.consume(key, rule);
+  if (decision.allowed) {
+    return true;
+  }
+  reply.header("retry-after", String(decision.retryAfterSeconds));
+  void reply.status(429).send(errorBody("RATE_LIMITED", "Too many requests", requestId));
+  return false;
 }
 
 function sendEvaluationError(error: unknown, reply: FastifyReply, requestId: string) {

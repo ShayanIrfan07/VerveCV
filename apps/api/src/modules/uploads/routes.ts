@@ -4,7 +4,9 @@ import { errorBody } from "../../http.js";
 import type { Database } from "../../infrastructure/db/client.js";
 import type { ObjectStorage } from "../../infrastructure/storage/memory.js";
 import { readSignedCookie, SESSION_COOKIE } from "../auth/cookies.js";
+import { type RateLimitRule, SlidingWindowRateLimiter } from "../auth/rate-limit.js";
 import { readSessionUser } from "../auth/service.js";
+import { runRetentionPass } from "../retention/worker.js";
 import { UploadError } from "./errors.js";
 import type { ParseGate } from "./parse-gate.js";
 import {
@@ -80,11 +82,15 @@ export async function registerUploadRoutes(
     db: Database | null;
     storage: ObjectStorage | null;
     parseGate: ParseGate | null;
+    rateLimiter: SlidingWindowRateLimiter;
   },
 ): Promise<void> {
   app.post("/api/v1/resumes/upload-intents", { schema: intentSchema }, async (request, reply) => {
     try {
       const user = await requireUser(deps.db, request);
+      if (!allowRateLimit(deps.rateLimiter, `upload:user:${user.id}`, deps.config.uploadRateLimit, reply, request.id)) {
+        return;
+      }
       const ready = requireReady(deps);
       const body = request.body as { filename: string; mimeType: string; sizeBytes: number };
       const intent = await createUploadIntent(
@@ -183,7 +189,11 @@ export async function registerUploadRoutes(
     try {
       const user = await requireUser(deps.db, request);
       const params = request.params as { resumeId: string };
-      await deleteResume(requireDb(deps.db), user.id, params.resumeId);
+      const db = requireDb(deps.db);
+      await deleteResume(db, user.id, params.resumeId);
+      if (deps.storage) {
+        await runRetentionPass({ db, storage: deps.storage });
+      }
       return reply.status(204).send();
     } catch (error) {
       return sendUploadError(error, reply, request.id);
@@ -223,6 +233,25 @@ async function requireUser(db: Database | null, request: FastifyRequest) {
     throw new UploadError(401, "UNAUTHORIZED", "Unauthorized");
   }
   return user;
+}
+
+function allowRateLimit(
+  limiter: SlidingWindowRateLimiter,
+  key: string,
+  rule: RateLimitRule | null,
+  reply: FastifyReply,
+  requestId: string,
+): boolean {
+  if (!rule) {
+    return true;
+  }
+  const decision = limiter.consume(key, rule);
+  if (decision.allowed) {
+    return true;
+  }
+  reply.header("retry-after", String(decision.retryAfterSeconds));
+  void reply.status(429).send(errorBody("RATE_LIMITED", "Too many requests", requestId));
+  return false;
 }
 
 function sendUploadError(error: unknown, reply: FastifyReply, requestId: string) {

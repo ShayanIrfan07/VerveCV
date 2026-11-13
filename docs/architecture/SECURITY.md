@@ -98,7 +98,7 @@ Server-side parsing does not run unbounded on the request thread. It runs under 
 
 Each resume version has `expires_at` 90 days after creation. A retention task deletes the R2 object, extracted content, preview data, findings, and other personal evaluation fields for that version. The task is safe to retry. Audit events record the event type and the target id, not the file contents.
 
-User-requested delete uses the same task path and may run before day 90. Until Phase 7 (`feature/retention-and-hardening`) ships the retryable deletion worker, `DELETE /api/v1/resumes/:id` only performs logical access revocation (`deleted_at`, `deletion_state = "delete_requested"`) and enqueues `retention_tasks`; completing physical R2 object and derived-data deletion in Phase 7 is a release blocker for Version 1.
+User-requested delete uses the same task path and may run before day 90. `DELETE /api/v1/resumes/:id` revokes access and the in-process retention worker deletes the stored object and derived evaluation rows. A missing object on retry is success. A storage failure leaves the task `retryable_failure`. No attempt cap or lease duration is applied, because ADR 0001 item A7 has not approved those numbers. A process restart reclaims a task left in `running`.
 
 Neon point-in-time recovery and R2 noncurrent-object retention can keep bytes after the application delete. The product copy must say that application-level deletion is within 90 days, and it must describe provider backup retention only after those provider settings are known. Decision 13 and additional item A8 cover that disclosure.
 
@@ -112,7 +112,7 @@ Error responses use the stable error envelope and a request id. Internal excepti
 
 Phase 7 sets a content security policy that does not allow the Lottie CDN cited in the product PDF, or any other unexpected third-party script. The confetti animation, if approved, is a local reduced-motion-aware effect.
 
-Other headers to set on the API and the frontend host: `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and a frame policy that prevents the app from being embedded for clickjacking. Exact CSP source lists are written when the real asset hosts exist.
+The API sends `Content-Security-Policy: default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`, plus `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, and `X-Frame-Options: DENY`. The web page allows same-origin scripts, same-origin and blob workers for PDF.js, and HTTPS connections to the private R2 host for signed upload and download URLs. It does not allow a third-party script host.
 
 ## 11. Supply chain and runtime
 

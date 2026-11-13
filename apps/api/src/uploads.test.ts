@@ -17,6 +17,7 @@ import { loadConfig, type AppConfig } from "./config.js";
 import type { Database } from "./infrastructure/db/client.js";
 import * as schema from "./infrastructure/db/schema.js";
 import { MemoryStorage, type ObjectStorage } from "./infrastructure/storage/memory.js";
+import { runRetentionPass } from "./modules/retention/worker.js";
 import { ParseGate } from "./modules/uploads/parse-gate.js";
 import { cleanupAbandonedUploadIntents, completeUpload, createUploadIntent } from "./modules/uploads/service.js";
 import { createDeflateZip } from "../../../packages/documents/src/zip-node.js";
@@ -97,7 +98,7 @@ async function sessionFor(
 }
 
 describe("resume upload", () => {
-  it("verifies a PDF, hides it from another user, and soft-deletes it while queueing a pending retention task", async () => {
+  it("verifies a PDF, hides it from another user, and deletes the stored object", async () => {
     const { app, client, pgliteDb, storage } = await createTestApp();
     const { cookie: owner } = await sessionFor(app, "owner@example.com");
     const bytes = samplePdfBytes();
@@ -182,15 +183,13 @@ describe("resume upload", () => {
     });
     expect(viewAfterDelete.statusCode).toBe(404);
 
-    // Honest lifecycle verification: retention_tasks is pending and physical object
-    // awaits Phase 7's retryable deletion worker (physicalDeletionComplete: false).
     const tasks = await pgliteDb
       .select()
       .from(schema.retentionTasks)
       .where(eq(schema.retentionTasks.resumeVersionId, created.versionId));
     expect(tasks).toHaveLength(1);
-    expect(tasks[0]?.state).toBe("pending");
-    expect(storage.has(objectKey)).toBe(true);
+    expect(tasks[0]?.state).toBe("succeeded");
+    expect(storage.has(objectKey)).toBe(false);
 
     const deleteAudits = await pgliteDb
       .select()
@@ -649,6 +648,86 @@ describe("resume upload", () => {
 
     await app.close();
     await client.close();
+  });
+
+  it("retries a failed object delete and then purges the expired version", async () => {
+    const { app, client, pgliteDb, storage } = await createTestApp();
+    const { cookie: owner } = await sessionFor(app, "expire@example.com");
+    const bytes = samplePdfBytes();
+    const intent = await app.inject({
+      method: "POST",
+      url: "/api/v1/resumes/upload-intents",
+      headers: { origin: ORIGIN, cookie: owner },
+      payload: { filename: "Expire_Resume.pdf", mimeType: PDF_MIME, sizeBytes: bytes.byteLength },
+    });
+    const created = intent.json<{ resumeId: string; versionId: string; upload: { url: string } }>();
+    const objectKey = created.upload.url.replace("memory://upload/", "");
+    await storage.put(objectKey, bytes);
+    const completed = await app.inject({
+      method: "POST",
+      url: `/api/v1/resumes/${created.resumeId}/versions/${created.versionId}/complete-upload`,
+      headers: { origin: ORIGIN, cookie: owner },
+      payload: {},
+    });
+    expect(completed.statusCode).toBe(200);
+    await pgliteDb
+      .update(schema.resumeVersions)
+      .set({ expiresAt: new Date(0) })
+      .where(eq(schema.resumeVersions.id, created.versionId));
+    let failDelete = true;
+    const flaky = {
+      createUploadUrl: (input: Parameters<ObjectStorage["createUploadUrl"]>[0]) => storage.createUploadUrl(input),
+      createDownloadUrl: (input: Parameters<ObjectStorage["createDownloadUrl"]>[0]) => storage.createDownloadUrl(input),
+      get: (key: string, options?: Parameters<ObjectStorage["get"]>[1]) => storage.get(key, options),
+      delete: async (key: string) => {
+        if (failDelete) {
+          throw new Error("simulated storage failure");
+        }
+        await storage.delete(key);
+      },
+    };
+    await runRetentionPass({ db: pgliteDb as unknown as Database, storage: flaky });
+    expect(storage.has(objectKey)).toBe(true);
+    const failed = await pgliteDb
+      .select()
+      .from(schema.retentionTasks)
+      .where(eq(schema.retentionTasks.resumeVersionId, created.versionId));
+    expect(failed[0]?.state).toBe("retryable_failure");
+    expect(failed[0]?.lastErrorCode).toBe("STORAGE_DELETE_FAILED");
+    failDelete = false;
+    await runRetentionPass({ db: pgliteDb as unknown as Database, storage });
+    expect(storage.has(objectKey)).toBe(false);
+    const purged = await pgliteDb
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.eventType, "resume_version_purged"));
+    expect(purged[0]?.targetId).toBe(created.versionId);
+    expect(JSON.stringify(purged[0]?.safeMetadata)).not.toContain("Expire_Resume");
+    await app.close();
+    await client.close();
+  });
+
+  it("limits uploads only when an upload rate limit is configured", async () => {
+    const limited = await createTestApp({ uploadRateLimit: { max: 1, windowMs: 60_000 } });
+    const { cookie } = await sessionFor(limited.app, "limited@example.com");
+    const bytes = samplePdfBytes();
+    const first = await limited.app.inject({
+      method: "POST",
+      url: "/api/v1/resumes/upload-intents",
+      headers: { origin: ORIGIN, cookie },
+      payload: { filename: "One.pdf", mimeType: PDF_MIME, sizeBytes: bytes.byteLength },
+    });
+    expect(first.statusCode).toBe(201);
+    const second = await limited.app.inject({
+      method: "POST",
+      url: "/api/v1/resumes/upload-intents",
+      headers: { origin: ORIGIN, cookie },
+      payload: { filename: "Two.pdf", mimeType: PDF_MIME, sizeBytes: bytes.byteLength },
+    });
+    expect(second.statusCode).toBe(429);
+    expect(second.headers["retry-after"]).toBeTruthy();
+    await limited.app.close();
+    await limited.client.close();
   });
 });
 

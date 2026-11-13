@@ -16,6 +16,9 @@ describe("loadConfig", () => {
       parseQueueTimeoutMs: 5_000,
       maxPendingUploadsPerUser: 10,
       uploadIntentGraceSeconds: 60,
+      uploadRateLimit: null,
+      evaluateRateLimit: null,
+      retentionPollMs: null,
       r2: null,
     });
     expect(cfg.authRateLimits.register.max).toBe(5);
@@ -30,6 +33,7 @@ describe("loadConfig", () => {
 
   it("validates port, rate-limit, parse-queue, signed URL TTL, and R2 settings", () => {
     expect(() => loadConfig({ PORT: "0" })).toThrow(/PORT/);
+    expect(() => loadConfig({ UPLOAD_RATE_LIMIT_MAX: "2" })).toThrow(/UPLOAD_RATE_LIMIT_MAX and UPLOAD_RATE_LIMIT_WINDOW_SECONDS/);
     expect(() => loadConfig({ AUTH_RATE_LIMIT_LOGIN_ACCOUNT_MAX: "0" })).toThrow(
       /AUTH_RATE_LIMIT_LOGIN_ACCOUNT_MAX/,
     );
