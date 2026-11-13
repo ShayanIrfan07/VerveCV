@@ -157,7 +157,7 @@ Frontend production tree, unpacked sum **53,783,631 bytes (51.29 MiB)**, 28 pack
 
 API production tree, unpacked sum **20,345,999 bytes (19.40 MiB)**, 61 packages. Largest members: `drizzle-orm@0.45.4` 10.03 MiB, `fastify@5.12.8` 2.88 MiB, `ajv@8.20.0` 0.99 MiB, `pino@10.4.0` 0.67 MiB, `postgres@4.1.1` 0.30 MiB, `aws4fetch@1.0.20` 0.06 MiB.
 
-Spelling candidate, not yet accepted: `nspell@2.1.5` plus `dictionary-en@4.0.0`, unpacked sum **622,389 bytes (0.59 MiB)**. Phase 5 still has to measure false positives on technical terms before this pair is installed.
+Spelling candidate, measured and not installed: `nspell@2.1.5` plus `dictionary-en@4.0.0` and its `is-buffer` dependency, unpacked sum **622,389 bytes (0.59 MiB)**. On 2026-11-13 a 62-term resume probe marked 45 terms unknown, including Kubernetes, Node.js, JSON, and LinkedIn. Ordinary English controls were recognized. No technical-term exemption list is approved, so installing the pair would penalize technical vocabulary. Grammar and spelling stays withheld.
 
 Argon2 native binary for the production OS: `@node-rs/argon2-linux-x64-gnu@2.2.2`, **728,614 bytes (0.69 MiB)**. The Windows x64 binary is 0.58 MiB. The size gate must count the binary that production ships, not every platform package. `@node-rs/argon2@2.2.2` itself is 0.04 MiB and lists 13 platform packages as optional dependencies.
 

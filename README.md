@@ -4,7 +4,7 @@ Make every bullet count.
 
 VerveCV is a multi-user, rule-based resume evaluator, not an AI-assisted platform. Version 1 is fully rule-based and evaluates PDF and DOCX resumes against a deterministic, versioned 100-point rubric, with no retrieval-augmented generation (RAG), large language model (LLM), embeddings service, or external AI or grammar API.
 
-Phase 0 records the architecture and the open scoring decisions. Phase 1 provides the workspace shell, Phase 2 adds PostgreSQL migrations and cookie-based authentication, Phase 3 adds browser-side PDF/DOCX preview and server-side upload verification, and Phase 4 scores only the rubric rules that are already specified. A result stays provisional: withheld criteria stay out of the denominator, and the score is not rescaled to 100. Penalties that the rubric cannot yet compute are reported as not evaluated rather than as a zero deduction.
+Phase 0 records the architecture and the open scoring decisions. Phase 1 provides the workspace shell, Phase 2 adds PostgreSQL migrations and cookie-based authentication, Phase 3 adds browser-side PDF/DOCX preview and server-side upload verification, and Phase 4 scores only the rubric rules that are already specified. Phase 5 measured the English spelling candidate and left it uninstalled, so grammar and spelling stays withheld. A result stays provisional: withheld criteria stay out of the denominator, and the score is not rescaled to 100. Penalties that the rubric cannot yet compute are reported as not evaluated rather than as a zero deduction.
 
 ## Development
 

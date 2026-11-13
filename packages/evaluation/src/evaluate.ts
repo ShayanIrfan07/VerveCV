@@ -1,4 +1,5 @@
 import { uniqueSkillScore } from "./bands.js";
+import { grammarAndSpellingRule } from "./grammar.js";
 import type {
   EvaluationFinding,
   EvidenceReference,
@@ -68,7 +69,6 @@ const WITHHELD_RULES: Array<[string, number, RuleWithholdReasonCode]> = [
   ["section-ordering", CRITERION_MAXIMA.sectionOrdering, "OPEN_DECISION"],
   ["reverse-chronology", CRITERION_MAXIMA.reverseChronology, "OPEN_DECISION"],
   ["formatting-consistency", CRITERION_MAXIMA.formattingConsistency, "OPEN_DECISION"],
-  ["grammar-and-spelling", CRITERION_MAXIMA.grammarAndSpelling, "DICTIONARY_UNAVAILABLE"],
   ["readability", CRITERION_MAXIMA.readability, "OPEN_DECISION"],
   ["punctuation", CRITERION_MAXIMA.punctuation, "OPEN_DECISION"],
   ["entry-details", CRITERION_MAXIMA.entryDetails, "OPEN_DECISION"],
@@ -81,6 +81,7 @@ export function evaluate(document: ResumeDocument, options: EvaluationOptions): 
   const criteria = [
     ...bulletCriteria(document),
     filenameRule(document, options.candidateName),
+    grammarAndSpellingRule(),
     ...WITHHELD_RULES.map(([ruleId, maxScore, reasonCode]) => withheld(ruleId, maxScore, reasonCode)),
     requiredSections(document, options.candidateType),
     contactInformation(document, options.candidateName),
