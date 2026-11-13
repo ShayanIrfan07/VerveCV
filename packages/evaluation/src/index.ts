@@ -15,3 +15,22 @@ export type {
 } from "./model.js";
 
 export { CATEGORY_MAXIMA, CRITERION_MAXIMA, RUBRIC_VERSION, sumValues } from "./rubric.js";
+export {
+  actionVerbScore,
+  averageRoleCompletion,
+  bulletLengthScore,
+  cappedDeduction,
+  grammarScore,
+  impactScore,
+  keywordMatchScore,
+  minimumBulletsScore,
+  punctuationScore,
+  quantifiedMetricScore,
+  roleEntryCredit,
+  roundHalfUp,
+  shortResumePenalty,
+  skillsRatioScore,
+  uniqueSkillScore,
+} from "./bands.js";
+export { aggregate, clamp, evaluate } from "./evaluate.js";
+export type { CandidateType, EvaluationOptions, EvaluationResult, JdMatch } from "./evaluate.js";
