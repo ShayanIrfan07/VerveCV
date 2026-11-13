@@ -141,6 +141,10 @@ Bands are written as whole-number percents. The source does not say whether a ra
 
 Question: which rounding rule and which inclusive bounds apply before a band is chosen?
 
+The current helpers do not choose a band for a percentage that sits between two named whole-number rows. These inputs stay withheld: 99.5 (between 95–99 and the separate 100% row), 89.5 (between 80–89 and 90–99 on the action-verb table), and 64.5 (between 55–64 and 65 or higher on quantified coverage). Non-finite values and percentages outside 0–100 also stay withheld.
+
+Proposal for approval, not implemented: round half up to the nearest whole percent, then read the closed whole-number band. Under that proposal only, 99.5 would become 100, 89.5 would become 90, and 64.5 would become 65. Ties at .5 would round away from zero. This paragraph does not authorize that rounding.
+
 ### A2. Word-count tokenization
 
 The length rule needs a 12-word threshold and “robust” counting for punctuation, hyphenated terms, and technical tokens. The source does not define a token.

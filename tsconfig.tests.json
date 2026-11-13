@@ -9,6 +9,7 @@
     "packages/contracts/src/**/*.ts",
     "packages/evaluation/src/**/*.ts",
     "packages/documents/src/**/*.ts",
+    "packages/evaluation/src/**/*.ts",
     "scripts/**/*.ts",
     "scripts/**/*.d.mts"
   ]
