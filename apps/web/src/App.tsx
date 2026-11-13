@@ -30,7 +30,7 @@ export default function App() {
           Withheld criteria stay out of the denominator, and the score is not rescaled to 100.
         </p>
       </header>
-      <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
         <AuthPanel onUser={setUser} user={user} />
         <UploadPanel user={user} />
       </div>

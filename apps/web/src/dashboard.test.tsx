@@ -3,7 +3,14 @@ import type { ResumeDocument } from "@vervecv/documents";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { computePdfHighlightBoxes, PreviewView, resolveBlockSpan } from "./preview-view";
+import {
+  computePdfHighlightBoxes,
+  coverageSlices,
+  displayPieces,
+  EvidenceText,
+  PreviewView,
+  resolveBlockSpan,
+} from "./preview-view";
 import { UploadPanel } from "./upload-panel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -202,6 +209,116 @@ describe("PreviewView UTF-16 offset highlights and PDF fallbacks", () => {
     expect(fallbackBanner?.textContent).toContain("Exact PDF coordinates are unavailable");
     const pdfMark = container.querySelector('[data-testid="utf16-highlight-mark"]');
     expect(pdfMark?.textContent).toBe("Recieve");
+  });
+
+  it("does not paint the candidate name until a finding supplies evidence", async () => {
+    const name = "Ada Lovelace";
+    const email = "[ada@example.com](mailto:ada@example.com)";
+    const document: ResumeDocument = {
+      id: "name-highlight",
+      version: 1,
+      filename: "Ada.pdf",
+      mimeType: "application/pdf",
+      sourceHash: "name-highlight",
+      parserVersion: "test",
+      sections: [
+        {
+          id: "section-0",
+          kind: "CONTACT",
+          heading: "",
+          blockIds: ["block-0", "block-1"],
+        },
+      ],
+      blocks: [
+        {
+          id: "block-0",
+          sectionId: "section-0",
+          type: "paragraph",
+          text: name,
+          startOffset: 0,
+          endOffset: name.length,
+          page: 1,
+          boxes: [{ page: 1, x: 72, y: 740, width: 160, height: 18 }],
+        },
+        {
+          id: "block-1",
+          sectionId: "section-0",
+          type: "paragraph",
+          text: email,
+          startOffset: name.length + 1,
+          endOffset: name.length + 1 + email.length,
+          page: 1,
+          boxes: [{ page: 1, x: 72, y: 710, width: 180, height: 12 }],
+        },
+      ],
+      metadata: { pages: [{ page: 1, width: 612, height: 792 }] },
+    };
+    const rawEmail = document.blocks[1]!.text;
+
+    await act(async () => {
+      root.render(
+        <PreviewView document={document} fileBytes={new Uint8Array([0x25, 0x50, 0x44, 0x46])} />,
+      );
+    });
+
+    expect(container.querySelector('[data-testid="pdf-highlight-box"]')).toBeNull();
+    expect(container.querySelector('[data-testid="utf16-highlight-mark"]')).toBeNull();
+    const nameButton = container.querySelector('[data-block-id="block-0"]');
+    expect(nameButton?.className).not.toContain("ring-amber");
+    expect(nameButton?.className).not.toContain("bg-amber");
+    expect(document.blocks[1]!.text).toBe(rawEmail);
+
+    const visibleEmail = [...container.querySelectorAll('[data-block-id="block-1"] [data-visible-text="true"]')]
+      .map((node) => node.textContent)
+      .join("");
+    expect(visibleEmail).toBe("ada@example.com");
+    const hiddenSyntax = [...container.querySelectorAll('[data-markdown-syntax="true"]')]
+      .map((node) => node.textContent)
+      .join("");
+    expect(hiddenSyntax).toContain("mailto:");
+    expect(hiddenSyntax.startsWith("[")).toBe(true);
+
+    const labelStart = email.indexOf("ada@example.com");
+    await act(async () => {
+      root.render(
+        <PreviewView
+          document={document}
+          fileBytes={new Uint8Array([0x25, 0x50, 0x44, 0x46])}
+          highlight={{ blockId: "block-1", startOffset: labelStart, endOffset: labelStart + "ada".length }}
+        />,
+      );
+    });
+
+    const boxes = container.querySelectorAll('[data-testid="pdf-highlight-box"]');
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0]?.getAttribute("data-precision")).toBe("subspan");
+    expect(boxes[0]?.className).not.toContain("bg-amber-300");
+    expect(boxes[0]?.className).not.toContain("border-2");
+    const marked = container.querySelector('[data-testid="utf16-highlight-mark"]');
+    expect(marked?.textContent).toBe("ada");
+    expect(document.blocks[1]!.text).toBe(rawEmail);
+    expect(document.blocks[1]!.startOffset).toBe(name.length + 1);
+  });
+
+  it("keeps overlapping UTF-16 ranges and line breaks readable", () => {
+    const text = "Alpha line\nBeta line";
+    expect(displayPieces(`[ada@example.com](mailto:ada@example.com)`).filter((piece) => piece.visible).map((piece) => piece.text)).toEqual([
+      "ada@example.com",
+    ]);
+    const slices = coverageSlices(text.length, [
+      { startOffset: 0, endOffset: 10 },
+      { startOffset: 6, endOffset: 16 },
+    ]);
+    const overlap = slices.find((slice) => slice.depth > 1);
+    expect(overlap).toEqual({ start: 6, end: 10, depth: 2 });
+    expect(text.slice(overlap!.start, overlap!.end)).toBe("line");
+
+    act(() => {
+      root.render(<EvidenceText spans={[{ startOffset: 0, endOffset: 10 }, { startOffset: 6, endOffset: 16 }]} text={text} />);
+    });
+    const deep = container.querySelector('[data-evidence-depth="2"]');
+    expect(deep?.textContent).toBe("line");
+    expect(container.textContent).toContain("Alpha line\nBeta line");
   });
 });
 
@@ -568,6 +685,18 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
     expect(container.textContent).toContain("Historical bullet with recieve typo");
     expect(container.textContent).not.toContain("Current local bullet");
 
+    const historicalFinding = Array.from(container.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes('Possible misspelling "recieve".'),
+    );
+    await act(async () => {
+      historicalFinding?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="utf16-highlight-mark"]')?.textContent).toBe("recieve");
+
+    await act(async () => {
+      historicalFinding?.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+    });
+
     // Click historical evaluation #2 (original file unavailable): shows score 3 of 44 WITHOUT rendering Historical_Resume.docx preview!
     const histBtn2 = Array.from(container.querySelectorAll("button")).find((btn) =>
       btn.textContent?.includes("Unavailable_Resume.docx"),
@@ -584,5 +713,6 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
     ).toContain("Original resume file is unavailable for preview");
     expect(container.textContent).not.toContain("Historical bullet with recieve typo");
     expect(container.textContent).not.toContain("Current local bullet");
+    expect(container.querySelector('[data-testid="utf16-highlight-mark"]')).toBeNull();
   });
 });
