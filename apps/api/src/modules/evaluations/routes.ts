@@ -8,7 +8,13 @@ import { readSignedCookie, SESSION_COOKIE } from "../auth/cookies.js";
 import { readSessionUser } from "../auth/service.js";
 import type { ParseGate } from "../uploads/parse-gate.js";
 import { EvaluationError } from "./errors.js";
-import { createEvaluation, getEvaluation, getEvaluationJob, listEvaluations, MAX_EVALUATION_LIST_LIMIT } from "./service.js";
+import {
+  createEvaluation,
+  getEvaluation,
+  getEvaluationJob,
+  listEvaluations,
+  MAX_EVALUATION_LIST_LIMIT,
+} from "./service.js";
 
 const UUID = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
 
@@ -47,9 +53,27 @@ const listSchema = {
 
 export async function registerEvaluationRoutes(
   app: FastifyInstance,
-  deps: { config: AppConfig; db: Database | null; storage: ObjectStorage | null; parseGate: ParseGate | null },
+  deps: {
+    config: AppConfig;
+    db: Database | null;
+    storage: ObjectStorage | null;
+    parseGate: ParseGate | null;
+  },
 ): Promise<void> {
   app.post("/api/v1/evaluations", { schema: createSchema }, async (request, reply) => {
+    const abortController = new AbortController();
+    const onAborted = (): void => {
+      if (!reply.sent) {
+        abortController.abort();
+      }
+    };
+    request.raw.on("aborted", onAborted);
+    request.raw.on("close", () => {
+      if (!reply.raw.writableEnded) {
+        abortController.abort();
+      }
+    });
+
     try {
       const user = await requireUser(deps.db, request);
       const ready = requireReady(deps);
@@ -59,9 +83,16 @@ export async function registerEvaluationRoutes(
         jobDescription: string | null;
         idempotencyKey: string;
       };
-      return await createEvaluation({ ...ready, config: deps.config, parseGate: deps.parseGate }, user.id, body);
+      return await createEvaluation(
+        { ...ready, config: deps.config, parseGate: deps.parseGate },
+        user.id,
+        body,
+        { signal: abortController.signal },
+      );
     } catch (error) {
       return sendEvaluationError(error, reply, request.id);
+    } finally {
+      request.raw.off("aborted", onAborted);
     }
   });
 
@@ -103,7 +134,10 @@ function requireDb(db: Database | null): Database {
   return db;
 }
 
-function requireReady(deps: { db: Database | null; storage: ObjectStorage | null }): { db: Database; storage: ObjectStorage } {
+function requireReady(deps: {
+  db: Database | null;
+  storage: ObjectStorage | null;
+}): { db: Database; storage: ObjectStorage } {
   if (!deps.storage) {
     throw new EvaluationError(503, "STORAGE_NOT_CONFIGURED", "Object storage is not configured.");
   }
@@ -125,6 +159,9 @@ async function requireUser(db: Database | null, request: FastifyRequest) {
 
 function sendEvaluationError(error: unknown, reply: FastifyReply, requestId: string) {
   if (error instanceof EvaluationError) {
+    if (error.code === "PARSE_OVERLOADED") {
+      reply.header("retry-after", "5");
+    }
     return reply.status(error.statusCode).send(errorBody(error.code, error.message, requestId));
   }
   throw error;

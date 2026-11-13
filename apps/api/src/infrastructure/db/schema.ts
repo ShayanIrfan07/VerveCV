@@ -149,6 +149,7 @@ export const evaluationJobs = pgTable(
     leaseUntil: timestamp("lease_until", { withTimezone: true }),
     errorCode: text("error_code"),
     idempotencyKey: text("idempotency_key").notNull(),
+    requestFingerprint: text("request_fingerprint"),
     createdAt: timestamps.createdAt,
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),

@@ -35,7 +35,7 @@ The browser dev server proxies `/api` to `http://localhost:3000`. A local previe
 
 ### Deletion lifecycle status (release-blocking dependency for Phase 7)
 
-`DELETE /api/v1/resumes/:resumeId` performs **logical soft-deletion only** in Phase 3: it immediately revokes read, listing, download-URL (`view-url`), and verification access by setting `resumes.deleted_at` and `resume_versions.deletion_state = "delete_requested"`, and enqueues `pending` rows in `retention_tasks`. **Physical deletion is not yet complete**: retryable R2 object deletion, 90-day expiry sweeps, and derived evaluation/finding purges are a **release-blocking dependency assigned to Phase 7 (`feature/retention-and-hardening`)**.
+`DELETE /api/v1/resumes/:resumeId` performs **logical soft-deletion only** in Phase 3–6: it immediately revokes read, listing, download-URL (`view-url`), verification, evaluation history (`GET /api/v1/evaluations`), individual evaluation (`GET /api/v1/evaluations/:id`), and evaluation-job (`GET /api/v1/evaluation-jobs/:id`) access by setting `resumes.deleted_at` and `resume_versions.deletion_state = "delete_requested"`, and enqueues `pending` rows in `retention_tasks`. **Physical deletion is not yet complete**: retryable R2 object deletion, 90-day expiry sweeps, and derived evaluation/finding purges are a **release-blocking dependency assigned to Phase 7 (`feature/retention-and-hardening`)**.
 
 ### Operational defaults pending ADR 0001 approval
 

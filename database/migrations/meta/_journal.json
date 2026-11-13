@@ -15,6 +15,13 @@
       "when": 1794480015385,
       "tag": "0001_omniscient_bromley",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794569709547,
+      "tag": "0002_sad_colonel_america",
+      "breakpoints": true
     }
   ]
 }
