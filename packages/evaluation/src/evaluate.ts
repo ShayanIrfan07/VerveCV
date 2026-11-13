@@ -327,4 +327,3 @@ function findingFor(ruleId: string, category: string, message: string): Evaluati
     status: "active",
   };
 }
-
