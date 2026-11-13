@@ -26,8 +26,8 @@ export default function App() {
         <p className="text-sm font-medium tracking-wide text-slate-600">VerveCV</p>
         <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">Make every bullet count.</h1>
         <p className="mt-4 max-w-2xl text-lg leading-8 text-slate-700">
-          Upload a PDF or DOCX resume and preview the extracted text in your browser. Official scoring stays unavailable
-          until the open rubric decisions are approved.
+          Upload a PDF or DOCX resume. After the server verifies the file, the dashboard shows a provisional score.
+          Withheld criteria stay out of the denominator, and the score is not rescaled to 100.
         </p>
       </header>
       <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">

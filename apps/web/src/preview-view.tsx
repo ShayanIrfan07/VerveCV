@@ -6,10 +6,12 @@ const SCALE = 1.25;
 interface PreviewViewProps {
   document: ResumeDocument;
   fileBytes: Uint8Array | null;
+  highlightBlockId?: string | null;
 }
 
-export function PreviewView({ document, fileBytes }: PreviewViewProps) {
+export function PreviewView({ document, fileBytes, highlightBlockId = null }: PreviewViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(document.blocks[0]?.id ?? null);
+  const activeId = highlightBlockId ?? selectedId;
   const selected = document.blocks.find((block) => block.id === selectedId) ?? null;
   const docx = document.mimeType !== "application/pdf";
 
@@ -17,9 +19,9 @@ export function PreviewView({ document, fileBytes }: PreviewViewProps) {
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
       <div className="rounded-2xl border border-slate-200 bg-white p-4">
         {docx || !fileBytes ? (
-          <DocxPreview document={document} selectedId={selectedId} onSelect={setSelectedId} />
+          <DocxPreview document={document} selectedId={activeId} onSelect={setSelectedId} />
         ) : (
-          <PdfPreview bytes={fileBytes} document={document} selectedId={selectedId} />
+          <PdfPreview bytes={fileBytes} document={document} selectedId={activeId} />
         )}
       </div>
       <aside className="rounded-2xl border border-slate-200 bg-white p-4">
@@ -28,7 +30,7 @@ export function PreviewView({ document, fileBytes }: PreviewViewProps) {
           {document.blocks.map((block) => (
             <li key={block.id}>
               <button
-                className={`w-full rounded-lg px-3 py-2 text-left text-sm ${selectedId === block.id ? "bg-amber-200" : "bg-slate-50"}`}
+                className={`w-full rounded-lg px-3 py-2 text-left text-sm ${activeId === block.id ? "bg-amber-200" : "bg-slate-50"}`}
                 onClick={() => setSelectedId(block.id)}
                 onMouseEnter={() => setSelectedId(block.id)}
                 type="button"

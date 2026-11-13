@@ -44,6 +44,9 @@ importers:
       '@vervecv/documents':
         specifier: workspace:*
         version: link:../../packages/documents
+      '@vervecv/evaluation':
+        specifier: workspace:*
+        version: link:../../packages/evaluation
       aws4fetch:
         specifier: 1.0.20
         version: 1.0.20
