@@ -22,20 +22,38 @@ export interface EvaluationOptions {
 }
 
 export interface JdMatch {
-  version: "jd-match-v1";
+  status: "not_implemented";
   appliedToScore: false;
+}
+
+export interface PenaltyAssessment {
+  penaltyId: string;
+  status: "not_evaluated" | "scored";
+  deduction: number | null;
+  reasonCode?: RuleWithholdReasonCode;
 }
 
 export interface EvaluationResult {
   rubricVersion: string;
   scoreStatus: ScoreStatus;
   baseScore: number;
-  penaltyTotal: number;
-  finalScore: number;
+  penaltyTotal: number | null;
+  penaltyStatus: "not_evaluated" | "evaluated";
+  penalties: PenaltyAssessment[];
+  finalScore: number | null;
   denominator: number;
   criteria: RuleResult[];
   jdMatch: JdMatch | null;
 }
+
+/** Documented React spellings only. Further aliases need a new version. */
+export const SKILL_ALIAS_VERSION = "skill-aliases-2026-11-12";
+
+const SKILL_ALIASES: Record<string, string> = {
+  react: "react",
+  "react.js": "react",
+  reactjs: "react",
+};
 
 const BULLET_SECTIONS = new Set<ResumeSectionKind>(["WORK_EXPERIENCE", "LEADERSHIP_EXPERIENCE", "PROJECTS"]);
 const BULLET_RULES = [
@@ -68,17 +86,20 @@ export function evaluate(document: ResumeDocument, options: EvaluationOptions): 
     contactInformation(document, options.candidateName),
     uniqueSkills(document),
   ];
-  const aggregated = aggregate(criteria);
-  const withDescription = options.jobDescription !== null && options.jobDescription.trim().length > 0;
+  const aggregated = aggregate(criteria, unevaluatedPenalties());
+  const description = options.jobDescription?.trim() ?? "";
   return {
     rubricVersion: RUBRIC_VERSION,
     scoreStatus: "PROVISIONAL",
     ...aggregated,
-    jdMatch: withDescription ? { version: "jd-match-v1", appliedToScore: false } : null,
+    jdMatch: description.length > 0 ? { status: "not_implemented", appliedToScore: false } : null,
   };
 }
 
-export function aggregate(criteria: RuleResult[]): Pick<EvaluationResult, "baseScore" | "penaltyTotal" | "finalScore" | "denominator" | "criteria"> {
+export function aggregate(
+  criteria: RuleResult[],
+  penalties: PenaltyAssessment[],
+): Pick<EvaluationResult, "baseScore" | "penaltyTotal" | "penaltyStatus" | "penalties" | "finalScore" | "denominator" | "criteria"> {
   let baseScore = 0;
   let denominator = 0;
   for (const criterion of criteria) {
@@ -87,14 +108,30 @@ export function aggregate(criteria: RuleResult[]): Pick<EvaluationResult, "baseS
       denominator += criterion.maxScore;
     }
   }
-  const penaltyTotal = 0;
+  const pending = penalties.some((penalty) => penalty.status !== "scored" || !Number.isFinite(penalty.deduction) || (penalty.deduction ?? 0) < 0);
+  const penaltyTotal = pending ? null : penalties.reduce((sum, penalty) => sum + (penalty.deduction ?? 0), 0);
   return {
     baseScore,
     penaltyTotal,
-    finalScore: clamp(baseScore - penaltyTotal, 0, 100),
+    penaltyStatus: pending ? "not_evaluated" : "evaluated",
+    penalties,
+    finalScore: penaltyTotal === null ? null : clamp(baseScore - penaltyTotal, 0, 100),
     denominator,
     criteria,
   };
+}
+
+function unevaluatedPenalties(): PenaltyAssessment[] {
+  const open: Array<[string, RuleWithholdReasonCode]> = [
+    ["short-resume", "OPEN_DECISION"],
+    ["personal-pronouns", "OPEN_DECISION"],
+    ["unprofessional-contact", "OPEN_DECISION"],
+    ["inappropriate-language", "OPEN_DECISION"],
+    ["personal-information", "OPEN_DECISION"],
+    ["special-characters", "OPEN_DECISION"],
+    ["duplication", "RULE_UNSPECIFIED"],
+  ];
+  return open.map(([penaltyId, reasonCode]) => ({ penaltyId, status: "not_evaluated", deduction: null, reasonCode }));
 }
 
 export function clamp(value: number, minimum: number, maximum: number): number {
@@ -129,7 +166,7 @@ function requiredSections(document: ResumeDocument, candidateType: CandidateType
 }
 
 function contactInformation(document: ResumeDocument, candidateName: string | null): RuleResult {
-  const text = document.blocks.map((block) => block.text).join("\n");
+  const text = contactBlocks(document).map((block) => block.text).join("\n");
   let points = 0;
   const findings: EvaluationFinding[] = [];
   if (hasName(document, candidateName)) {
@@ -168,7 +205,11 @@ function uniqueSkills(document: ResumeDocument): RuleResult {
       }
     }
   }
-  return scored("unique-skills", CRITERION_MAXIMA.uniqueSkills, uniqueSkillScore(skills.size), []);
+  const points = uniqueSkillScore(skills.size);
+  if (points === null) {
+    return withheld("unique-skills", CRITERION_MAXIMA.uniqueSkills, "OPEN_DECISION");
+  }
+  return scored("unique-skills", CRITERION_MAXIMA.uniqueSkills, points, []);
 }
 
 function filenameRule(document: ResumeDocument, candidateName: string | null): RuleResult {
@@ -201,13 +242,26 @@ function isBulletSection(section: ResumeSection | undefined): boolean {
   return section !== undefined && BULLET_SECTIONS.has(section.kind);
 }
 
+function contactBlocks(document: ResumeDocument): ResumeBlock[] {
+  const sections = new Map(document.sections.map((section) => [section.id, section]));
+  if (document.sections.length === 0) {
+    return document.blocks.filter((block) => block.type !== "heading");
+  }
+  return document.blocks.filter((block) => {
+    const section = sections.get(block.sectionId);
+    if (section === undefined || block.type === "heading") return false;
+    return section.kind === "CONTACT" || (section.kind === "OTHER" && section.heading.trim().length === 0);
+  });
+}
+
 function hasName(document: ResumeDocument, candidateName: string | null): boolean {
+  const blocks = contactBlocks(document);
   const tokens = nameTokens(candidateName);
   if (tokens.length > 0) {
-    const haystack = document.blocks.map((block) => block.text.toLowerCase()).join("\n");
-    return tokens.every((token) => haystack.includes(token));
+    const haystack = blocks.map((block) => block.text.toLowerCase()).join("\n");
+    return tokens.every((token) => new RegExp(`\\b${token}\\b`, "u").test(haystack));
   }
-  const first = document.blocks.find((block) => block.type !== "heading" && block.text.trim().length > 0);
+  const first = blocks.find((block) => block.text.trim().length > 0);
   return first !== undefined && /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$/u.test(first.text.trim());
 }
 
@@ -226,17 +280,19 @@ function filenameStem(filename: string): string {
 }
 
 function splitSkills(text: string): string[] {
-  return text.split(/[\n,;•●·]|(?:\s+-\s+)/u).map((part) => part.replace(/^[-*]\s+/u, "").trim()).filter((part) => part.length > 0);
+  return text
+    .split(/[\n\t,;|•●·]|(?:\s+\/\s+)|(?:\s+-\s+)/u)
+    .map((part) => part.replace(/^[-*]\s+/u, "").trim())
+    .filter((part) => part.length > 0);
 }
 
 function normalizeSkill(skill: string): string | null {
   if (EMAIL.test(skill) || PHONE.test(skill) || LINKEDIN.test(skill)) return null;
   if (/^\d+$/u.test(skill)) return null;
   const words = skill.split(/\s+/u).filter((word) => word.length > 0);
-  if (skill.includes(".") && words.length >= 4) return null;
-  const lower = skill.toLowerCase().trim();
-  if (lower === "react" || lower === "react.js" || lower === "reactjs") return "react";
-  return lower.replace(/\s+/gu, " ");
+  if (words.length > 5 || /[.!?]["']?$/u.test(skill) || /\.\s+\p{L}/u.test(skill)) return null;
+  const lower = skill.toLowerCase().trim().replace(/\s+/gu, " ");
+  return SKILL_ALIASES[lower] ?? lower;
 }
 
 const PHONE = /(?:\+?\d[\d\s().-]{6,}\d)/u;
@@ -248,6 +304,9 @@ function digitCount(value: string): number {
 }
 
 function scored(ruleId: string, maxScore: number, score: number, findings: EvaluationFinding[]): RuleResult {
+  if (!Number.isFinite(score) || score < 0 || score > maxScore) {
+    throw new Error(`${ruleId} score ${score} is outside 0..${maxScore}`);
+  }
   return { ruleId, maxScore, score, status: "scored", findings, version: RUBRIC_VERSION };
 }
 

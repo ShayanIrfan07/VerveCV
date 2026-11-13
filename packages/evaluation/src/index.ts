@@ -32,5 +32,5 @@ export {
   skillsRatioScore,
   uniqueSkillScore,
 } from "./bands.js";
-export { aggregate, clamp, evaluate } from "./evaluate.js";
-export type { CandidateType, EvaluationOptions, EvaluationResult, JdMatch } from "./evaluate.js";
+export { aggregate, clamp, evaluate, SKILL_ALIAS_VERSION } from "./evaluate.js";
+export type { CandidateType, EvaluationOptions, EvaluationResult, JdMatch, PenaltyAssessment } from "./evaluate.js";

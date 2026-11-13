@@ -1,4 +1,17 @@
-/** Specified arithmetic. A percentage that falls in a gap between named bands is withheld. */
+/**
+ * Specified arithmetic.
+ * A percentage that is not inside a named whole-number band is withheld.
+ * That includes 99.5, 89.5, and 64.5. ADR 0001 item A1 records a rounding
+ * proposal. It is not applied here.
+ */
+
+function usablePercent(percent: number): boolean {
+  return Number.isFinite(percent) && percent >= 0 && percent <= 100;
+}
+
+function usableCount(value: number): boolean {
+  return Number.isInteger(value) && value >= 0;
+}
 
 export type BandScore = { status: "scored"; score: number } | { status: "withheld" };
 
@@ -14,6 +27,7 @@ function gap(percent: number, above: number, below: number): boolean {
 }
 
 export function bulletLengthScore(percentMeeting: number): BandScore {
+  if (!usablePercent(percentMeeting)) return withheld;
   if (percentMeeting === 100) return scored(7);
   if (gap(percentMeeting, 99, 100)) return withheld;
   if (between(percentMeeting, 95, 99)) return scored(6);
@@ -32,6 +46,7 @@ export function bulletLengthScore(percentMeeting: number): BandScore {
 }
 
 export function actionVerbScore(percent: number): BandScore {
+  if (!usablePercent(percent)) return withheld;
   if (percent === 100) return scored(10);
   if (gap(percent, 99, 100)) return withheld;
   if (between(percent, 90, 99)) return scored(9);
@@ -48,6 +63,7 @@ export function actionVerbScore(percent: number): BandScore {
 }
 
 export function quantifiedMetricScore(percent: number): BandScore {
+  if (!usablePercent(percent)) return withheld;
   if (percent >= 65) return scored(6);
   if (gap(percent, 64, 65)) return withheld;
   if (between(percent, 55, 64)) return scored(5);
@@ -64,6 +80,7 @@ export function quantifiedMetricScore(percent: number): BandScore {
 }
 
 export function impactScore(quantifiedPercent: number, impactPercent: number): BandScore {
+  if (!usablePercent(quantifiedPercent) || !usablePercent(impactPercent)) return withheld;
   if (quantifiedPercent < 10) return scored(0);
   const category = quantifiedCategory(quantifiedPercent);
   if (category === "withheld") return withheld;
@@ -114,7 +131,8 @@ function impactForCategory(category: "C1" | "C2" | "C3" | "C4", percent: number)
   return withheld;
 }
 
-export function roleEntryCredit(requirement: 4 | 2 | 1, bulletsPresent: number): number {
+export function roleEntryCredit(requirement: 4 | 2 | 1, bulletsPresent: number): number | null {
+  if (!usableCount(bulletsPresent)) return null;
   if (requirement === 4) {
     if (bulletsPresent >= 4) return 6 / 6;
     if (bulletsPresent === 3) return 4 / 6;
@@ -131,6 +149,7 @@ export function roleEntryCredit(requirement: 4 | 2 | 1, bulletsPresent: number):
 }
 
 export function minimumBulletsScore(averageCompletionPercent: number): BandScore {
+  if (!usablePercent(averageCompletionPercent)) return withheld;
   if (averageCompletionPercent === 100) return scored(6);
   if (gap(averageCompletionPercent, 99, 100)) return withheld;
   if (between(averageCompletionPercent, 90, 99)) return scored(5);
@@ -146,25 +165,32 @@ export function minimumBulletsScore(averageCompletionPercent: number): BandScore
   return withheld;
 }
 
-export function averageRoleCompletion(credits: number[]): number {
+export function averageRoleCompletion(credits: number[]): number | null {
+  if (credits.length === 0 || credits.some((credit) => !Number.isFinite(credit) || credit < 0 || credit > 1)) {
+    return null;
+  }
   const total = credits.reduce((sum, credit) => sum + credit, 0);
   return (total / credits.length) * 100;
 }
 
 /** Round half up for non-negative keyword scores. 6.5 rounds to 7. */
-export function roundHalfUp(value: number): number {
+export function roundHalfUp(value: number): number | null {
+  if (!Number.isFinite(value) || value < 0) return null;
   return Math.floor(value + 0.5);
 }
 
 export function keywordMatchScore(completions: number[]): BandScore {
-  if (completions.length === 0) return withheld;
+  if (completions.length === 0 || completions.some((value) => !Number.isFinite(value) || value < 0)) {
+    return withheld;
+  }
   const average = completions.reduce((sum, value) => sum + Math.min(value, 1), 0) / completions.length;
   const score = roundHalfUp(average * 7);
-  if (score > 7) return withheld;
+  if (score === null || score < 0 || score > 7) return withheld;
   return scored(score);
 }
 
-export function skillsRatioScore(technical: number, soft: number): number {
+export function skillsRatioScore(technical: number, soft: number): number | null {
+  if (!usableCount(technical) || !usableCount(soft)) return null;
   if (soft === 0) return 0;
   const ratio = technical / soft;
   if (ratio < 1) return 0;
@@ -173,7 +199,8 @@ export function skillsRatioScore(technical: number, soft: number): number {
   return 1;
 }
 
-export function uniqueSkillScore(count: number): number {
+export function uniqueSkillScore(count: number): number | null {
+  if (!usableCount(count)) return null;
   if (count >= 10) return 5;
   if (count >= 8) return 4;
   if (count >= 5) return 3;
@@ -181,25 +208,29 @@ export function uniqueSkillScore(count: number): number {
   return 0;
 }
 
-export function grammarScore(distinctErrors: number): number {
+export function grammarScore(distinctErrors: number): number | null {
+  if (!usableCount(distinctErrors)) return null;
   const table = [10, 9, 8, 7, 6, 5, 3, 1];
   if (distinctErrors >= 8) return 0;
   return table[distinctErrors] ?? 0;
 }
 
-export function punctuationScore(errors: number): number {
+export function punctuationScore(errors: number): number | null {
+  if (!usableCount(errors)) return null;
   if (errors <= 0) return 3;
   if (errors === 1) return 2;
   if (errors <= 3) return 1;
   return 0;
 }
 
-export function shortResumePenalty(words: number): number {
+export function shortResumePenalty(words: number): number | null {
+  if (!usableCount(words)) return null;
   if (words < 240) return 15;
   if (words <= 299) return 10;
   return 0;
 }
 
-export function cappedDeduction(occurrences: number, cap: number): number {
-  return Math.min(Math.max(occurrences, 0), cap);
+export function cappedDeduction(occurrences: number, cap: number): number | null {
+  if (!usableCount(occurrences) || !usableCount(cap)) return null;
+  return Math.min(occurrences, cap);
 }
