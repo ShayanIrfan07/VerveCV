@@ -35,6 +35,9 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Check database migrations
+        run: pnpm db:check
+
       - name: Test
         run: pnpm test
 
@@ -43,6 +46,12 @@ jobs:
 
       - name: Check dependency footprint
         run: pnpm size:check
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end checks
+        run: pnpm test:e2e
 
       - name: Check diff whitespace
         env:

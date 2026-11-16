@@ -4,7 +4,7 @@ Make every bullet count.
 
 VerveCV is a multi-user, rule-based resume evaluator, not an AI-assisted platform. Version 1 is fully rule-based and evaluates PDF and DOCX resumes against a deterministic, versioned 100-point rubric, with no retrieval-augmented generation (RAG), large language model (LLM), embeddings service, or external AI or grammar API.
 
-Phase 0 records the architecture and the open scoring decisions. Phase 1 provides the workspace shell, Phase 2 adds PostgreSQL migrations and cookie-based authentication, Phase 3 adds browser-side PDF/DOCX preview and server-side upload verification, and Phase 4 scores only the rubric rules that are already specified. Phase 5 adds deterministic grammar, spelling (`nspell@2.1.5` + `dictionary-en@4.0.0` with a versioned technical-term allowlist), and punctuation checks with UTF-16 evidence locators; while ADR 0001 item A9 (distinct-error counting and grammar-vs-punctuation precedence) remains open, validated findings are surfaced as informational suggestions and the grammar and punctuation scores stay withheld. Phase 6 shows that provisional score and a history of earlier scores after the server re-reads a verified resume. Phase 7 enforces 90-day and user-requested physical deletion of stored R2 resume bytes and derived evaluations/findings using PostgreSQL-leased tasks, bounded exponential backoff with jitter, dead-letter alerting and operator requeue tooling, and production-safe upload and evaluation rate limits. A result stays provisional: withheld criteria stay out of the denominator, and the score is not rescaled to 100. Penalties that the rubric cannot yet compute are reported as not evaluated rather than as a zero deduction.
+Phase 0 records the architecture and the open scoring decisions. Phase 1 provides the workspace shell, Phase 2 adds PostgreSQL migrations and cookie-based authentication, Phase 3 adds browser-side PDF/DOCX preview and server-side upload verification, and Phase 4 scores only the rubric rules that are already specified. Phase 5 adds deterministic grammar, spelling (`nspell@2.1.5` + `dictionary-en@4.0.0` with a versioned technical-term allowlist), and punctuation checks with UTF-16 evidence locators; while ADR 0001 item A9 (distinct-error counting and grammar-vs-punctuation precedence) remains open, validated findings are surfaced as informational suggestions and the grammar and punctuation scores stay withheld. Phase 6 shows that provisional score and a history of earlier scores after the server re-reads a verified resume. Phase 7 enforces 90-day and user-requested physical deletion of stored R2 resume bytes and derived evaluations/findings using PostgreSQL-leased tasks, bounded exponential backoff with jitter, dead-letter alerting and operator requeue tooling, and production-safe upload and evaluation rate limits. Phase 8 (Pro subscriptions) stays blocked until ADR 0001 pricing, quotas, and a payment provider are approved. Phase 9 records the Version 1 release checklist, staging and rollback runbooks, and the `pnpm release:check` gate. A result stays provisional: withheld criteria stay out of the denominator, and the score is not rescaled to 100. Penalties that the rubric cannot yet compute are reported as not evaluated rather than as a zero deduction.
 
 ## Development
 
@@ -20,7 +20,11 @@ corepack pnpm db:check
 corepack pnpm test
 corepack pnpm build
 corepack pnpm size:check
+corepack pnpm release:check
+corepack pnpm test:e2e
 ```
+
+`pnpm release:check` runs lint, typecheck, `db:check`, tests, build, and `size:check`, then an in-process Fastify `inject` probe of `GET /api/v1/health/live` (`db=null`). That probe is not production API performance and excludes database, upload, evaluation, and R2 latency. Machine-local output goes to gitignored `docs/release/measurements.local.json` and must not overwrite the tracked example. `pnpm test:e2e` is a required CI and pre-production gate (`corepack pnpm exec playwright install chromium` once locally).
 
 The API listens on `0.0.0.0:$PORT` (`PORT` defaults to 3000). `GET /api/v1/health/live` reports that the process is up. `GET /api/v1/health/ready` checks the database when `DATABASE_URL` is set.
 
@@ -62,5 +66,9 @@ Session lifetime (`SESSION_TTL_SECONDS`, default 12 hours), authentication rate 
 - [Scoring rubric](docs/architecture/RUBRIC.md)
 - [Security architecture](docs/architecture/SECURITY.md)
 - [Open product decisions](docs/adr/0001-open-product-decisions.md)
+- [Release checklist](docs/release/CHECKLIST.md)
+- [Staging deployment](docs/release/STAGING.md)
+- [Rollback strategy](docs/release/ROLLBACK.md)
+- [Example in-process probe output](docs/release/measurements.example.json)
 
 Authoritative scores stay provisional until the open decisions that affect scoring are approved. A provisional result is not rescaled to 100.
