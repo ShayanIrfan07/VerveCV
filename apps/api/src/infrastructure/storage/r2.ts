@@ -3,6 +3,7 @@ import {
   StorageObjectTooLargeError,
   type ObjectStorage,
   type SignedUpload,
+  type StorageDeleteOptions,
   type StorageGetOptions,
 } from "./memory.js";
 
@@ -47,7 +48,10 @@ export function createR2Storage(
     async get(key: string, options?: StorageGetOptions): Promise<Uint8Array | null> {
       const url = new URL(`${base}/${encodeKey(key)}`);
       const signed = await client.sign(new Request(url, { method: "GET" }));
-      const response = await fetchImpl(signed);
+      const response = await fetchImpl(
+        signed,
+        options?.signal ? { signal: options.signal } : undefined,
+      );
       if (response.status === 404) {
         return null;
       }
@@ -57,10 +61,13 @@ export function createR2Storage(
       return readBodyLimited(response, options?.maxBytes);
     },
 
-    async delete(key: string): Promise<void> {
+    async delete(key: string, options?: StorageDeleteOptions): Promise<void> {
       const url = new URL(`${base}/${encodeKey(key)}`);
       const signed = await client.sign(new Request(url, { method: "DELETE" }));
-      const response = await fetchImpl(signed);
+      const response = await fetchImpl(
+        signed,
+        options?.signal ? { signal: options.signal } : undefined,
+      );
       if (response.status === 404 || response.ok) {
         return;
       }

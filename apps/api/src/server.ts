@@ -2,12 +2,8 @@ import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./infrastructure/db/client.js";
 import { createR2Storage } from "./infrastructure/storage/r2.js";
-import {
-  runRetentionPass,
-  startRetentionScheduler,
-  type RetentionSchedulerHandle,
-} from "./modules/retention/worker.js";
 import { ParseGate } from "./modules/uploads/parse-gate.js";
+import { attachRetentionRuntime } from "./retention-runtime.js";
 
 const config = loadConfig();
 if (!config.cookieSecret || config.cookieSecret.length < 32) {
@@ -24,40 +20,7 @@ const parseGate =
         maxWaitMs: config.parseQueueTimeoutMs,
       });
 const app = await buildApp({ config, db, storage, parseGate });
-
-let retentionScheduler: RetentionSchedulerHandle | null = null;
-if (db && storage) {
-  const logger = app.log;
-  if (config.retentionPollMs !== null) {
-    retentionScheduler = startRetentionScheduler(
-      { db, storage, logger },
-      {
-        pollMs: config.retentionPollMs,
-        leaseMs: config.retentionLeaseMs,
-        baseBackoffMs: config.retentionBaseBackoffMs,
-        maxBackoffMs: config.retentionMaxBackoffMs,
-        maxAttempts: config.retentionMaxAttempts,
-      },
-    );
-    app.addHook("onClose", async () => {
-      await retentionScheduler?.stop();
-    });
-  } else {
-    try {
-      await runRetentionPass(
-        { db, storage, logger },
-        {
-          leaseMs: config.retentionLeaseMs,
-          baseBackoffMs: config.retentionBaseBackoffMs,
-          maxBackoffMs: config.retentionMaxBackoffMs,
-          maxAttempts: config.retentionMaxAttempts,
-        },
-      );
-    } catch (error) {
-      app.log.error(error);
-    }
-  }
-}
+const retentionRuntime = await attachRetentionRuntime(app, { config, db, storage });
 
 let shuttingDown = false;
 const shutdown = async (signal: string): Promise<void> => {
@@ -81,7 +44,7 @@ process.once("SIGINT", () => void shutdown("SIGINT"));
 try {
   await app.listen({ host: config.host, port: config.port });
 } catch (error) {
-  await retentionScheduler?.stop();
+  await retentionRuntime.scheduler?.stop();
   app.log.error(error);
   process.exit(1);
 }

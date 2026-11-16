@@ -13,11 +13,15 @@ import { MemoryStorage, type ObjectStorage } from "./infrastructure/storage/memo
 import {
   computeRetentionBackoffMs,
   getRetentionBacklogSummary,
+  PURGED_OBJECT_KEY_PREFIX,
+  requeueFailedRetentionTasks,
   runRetentionPass,
   startRetentionScheduler,
   type PermanentRetentionFailure,
   type RetentionLogger,
 } from "./modules/retention/worker.js";
+import { parseRequeueCliArgs } from "./modules/retention/requeue-cli.js";
+import { attachRetentionRuntime } from "./retention-runtime.js";
 import { ParseGate } from "./modules/uploads/parse-gate.js";
 import { deleteResume } from "./modules/uploads/service.js";
 
@@ -574,6 +578,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     )[0];
     expect(versionRow?.deletionState).toBe("deleted");
     expect(versionRow?.originalFilename).toBe("deleted");
+    expect(versionRow?.objectKey).toBe(`${PURGED_OBJECT_KEY_PREFIX}${deletedTarget.versionId}`);
     expect(versionRow?.sha256).toBe("deleted");
     expect(versionRow?.sizeBytes).toBe(0);
     expect(versionRow?.parserVersion).toBeNull();
@@ -655,8 +660,306 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
         .where(eq(schema.resumeVersions.id, expiringUpload.versionId))
     )[0];
     expect(expiredVersionRow?.originalFilename).toBe("deleted");
+    expect(expiredVersionRow?.objectKey).toBe(
+      `${PURGED_OBJECT_KEY_PREFIX}${expiringUpload.versionId}`,
+    );
     expect(expiredVersionRow?.deletionState).toBe("deleted");
 
+    await app.close();
+    await client.close();
+  });
+
+  it("handles R2 deletions lasting longer than RETENTION_LEASE_MS via lease renewal, bounded delete timeout, and attempt-fenced ownership changes", async () => {
+    const { app, client, db, pgliteDb, memoryStorage } = await createRetentionTestApp();
+    const { cookie, userId } = await registerAndSignIn(app, "longlease@example.com");
+
+    // Case A: R2 delete takes ~110ms while leaseMs is only 40ms, with heartbeat renewal every 12ms.
+    // Lease renewal keeps lease_until in the future so a second worker polling at +60ms cannot steal the task.
+    const slowUpload = await uploadAndVerifyPdf(app, memoryStorage, cookie, "SlowButHealthy.pdf");
+    await deleteResume(db, userId, slowUpload.resumeId);
+
+    let worker2CheckedWhileInFlight = false;
+    const slowStorage: ObjectStorage = {
+      createUploadUrl: (input) => memoryStorage.createUploadUrl(input),
+      createDownloadUrl: (input) => memoryStorage.createDownloadUrl(input),
+      get: (key, opts) => memoryStorage.get(key, opts),
+      delete: async (key) => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        // Past the initial 40ms lease! Run Worker 2 right now -> must see renewed lease and process 0 tasks.
+        const worker2 = await runRetentionPass(
+          { db, storage: memoryStorage },
+          { workerId: "worker-2-check", leaseMs: 40 },
+        );
+        expect(worker2.processed).toBe(0);
+        worker2CheckedWhileInFlight = true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await memoryStorage.delete(key);
+      },
+    };
+
+    const renewedResult = await runRetentionPass(
+      { db, storage: slowStorage },
+      {
+        workerId: "worker-1-renewing",
+        leaseMs: 40,
+        leaseRenewIntervalMs: 12,
+        storageDeleteTimeoutMs: 500,
+      },
+    );
+    expect(worker2CheckedWhileInFlight).toBe(true);
+    expect(renewedResult).toMatchObject({ processed: 1, succeeded: 1 });
+    expect(memoryStorage.has(slowUpload.objectKey)).toBe(false);
+
+    // Case B: Hung R2 delete exceeds storageDeleteTimeoutMs -> aborts via AbortSignal before lease expiry
+    // and schedules retry with STORAGE_DELETE_TIMEOUT.
+    const hungUpload = await uploadAndVerifyPdf(app, memoryStorage, cookie, "HungDelete.pdf");
+    await deleteResume(db, userId, hungUpload.resumeId);
+
+    let observedAbortSignal = false;
+    const hungStorage: ObjectStorage = {
+      createUploadUrl: (input) => memoryStorage.createUploadUrl(input),
+      createDownloadUrl: (input) => memoryStorage.createDownloadUrl(input),
+      get: (key, opts) => memoryStorage.get(key, opts),
+      delete: (_key, options) =>
+        new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              observedAbortSignal = true;
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          );
+        }),
+    };
+
+    const timeoutResult = await runRetentionPass(
+      { db, storage: hungStorage },
+      {
+        workerId: "worker-timeout",
+        leaseMs: 200,
+        storageDeleteTimeoutMs: 30,
+        leaseRenewIntervalMs: null,
+        baseBackoffMs: 100,
+        maxBackoffMs: 1_000,
+      },
+    );
+    expect(observedAbortSignal).toBe(true);
+    expect(timeoutResult).toMatchObject({ processed: 1, retried: 1 });
+    const timedOutRow = (
+      await pgliteDb
+        .select()
+        .from(schema.retentionTasks)
+        .where(eq(schema.retentionTasks.resumeVersionId, hungUpload.versionId))
+    )[0];
+    expect(timedOutRow?.state).toBe("retryable_failure");
+    expect(timedOutRow?.lastErrorCode).toBe("STORAGE_DELETE_TIMEOUT");
+
+    // Clean up hungUpload so subsequent test cases start with an empty queue
+    await runRetentionPass(
+      { db, storage: memoryStorage },
+      { now: new Date(Date.now() + 10_000) },
+    );
+
+    // Case C: Stale worker loses lease (e.g. event-loop freeze disables renewal), SAME or DIFFERENT
+    // workerId reclaims at attempt 2, and stale attempt 1 completes late -> fenced by (leaseOwner, attempts)!
+    const fencedUpload = await uploadAndVerifyPdf(app, memoryStorage, cookie, "SameWorkerFence.pdf");
+    await deleteResume(db, userId, fencedUpload.resumeId);
+
+    const enteredAttempt1 = deferred();
+    const releaseAttempt1 = deferred();
+    let callNum = 0;
+
+    const pauseFirstAttemptStorage: ObjectStorage = {
+      createUploadUrl: (input) => memoryStorage.createUploadUrl(input),
+      createDownloadUrl: (input) => memoryStorage.createDownloadUrl(input),
+      get: (key, opts) => memoryStorage.get(key, opts),
+      delete: async (key) => {
+        callNum += 1;
+        if (callNum === 1) {
+          enteredAttempt1.resolve();
+          await releaseAttempt1.promise;
+          throw new Error("late error from attempt 1");
+        }
+        // Attempt 2 also temporarily fails so the task stays in retryable_failure (or running)
+        // when attempt 1 wakes up, testing the exact attempt-number fence!
+        if (callNum === 2) {
+          enteredAttempt2.resolve();
+          await releaseAttempt2.promise;
+          await memoryStorage.delete(key);
+        }
+      },
+    };
+
+    const enteredAttempt2 = deferred();
+    const releaseAttempt2 = deferred();
+
+    const tStart = new Date("2026-11-16T16:00:00.000Z");
+    // Attempt 1 claimed by "shared-worker-id" with renewal disabled (simulating frozen process)
+    const attempt1Promise = runRetentionPass(
+      { db, storage: pauseFirstAttemptStorage },
+      {
+        now: tStart,
+        workerId: "shared-worker-id",
+        leaseMs: 50,
+        leaseRenewIntervalMs: null,
+        storageDeleteTimeoutMs: 5_000,
+      },
+    );
+    await enteredAttempt1.promise;
+
+    // Lease expires (tStart + 60ms) and a restarted instance WITH THE SAME workerId ("shared-worker-id")
+    // reclaims the task at attempt = 2!
+    const attempt2Promise = runRetentionPass(
+      { db, storage: pauseFirstAttemptStorage },
+      {
+        now: new Date(tStart.getTime() + 60),
+        workerId: "shared-worker-id",
+        leaseMs: 60_000,
+        leaseRenewIntervalMs: null,
+        storageDeleteTimeoutMs: 5_000,
+      },
+    );
+    await enteredAttempt2.promise;
+
+    // Stale attempt 1 finishes with an error while attempt 2 is actively running under the SAME workerId:
+    // Because of `attempts` fencing, attempt 1 MUST NOT clobber attempt 2's running state!
+    releaseAttempt1.resolve();
+    const attempt1Result = await attempt1Promise;
+    expect(attempt1Result.retried).toBe(0);
+    expect(attempt1Result.succeeded).toBe(0);
+
+    const activeAttempt2Row = (
+      await pgliteDb
+        .select()
+        .from(schema.retentionTasks)
+        .where(eq(schema.retentionTasks.resumeVersionId, fencedUpload.versionId))
+    )[0];
+    expect(activeAttempt2Row?.state).toBe("running");
+    expect(activeAttempt2Row?.attempts).toBe(2);
+
+    // Let attempt 2 finish cleanly
+    releaseAttempt2.resolve();
+    const attempt2Result = await attempt2Promise;
+    expect(attempt2Result.succeeded).toBe(1);
+    expect(memoryStorage.has(fencedUpload.objectKey)).toBe(false);
+
+    await app.close();
+    await client.close();
+  });
+
+  it("supports safe operator requeue and dead-letter alerting for permanently failed tasks, and starts the 5-minute production scheduler via attachRetentionRuntime", async () => {
+    const { app, client, db, pgliteDb, memoryStorage } = await createRetentionTestApp();
+    const { cookie, userId } = await registerAndSignIn(app, "requeue@example.com");
+    const uploaded = await uploadAndVerifyPdf(app, memoryStorage, cookie, "DeadLetter.pdf");
+    await deleteResume(db, userId, uploaded.resumeId);
+
+    const errorLogs: Array<Record<string, unknown>> = [];
+    const infoLogs: Array<Record<string, unknown>> = [];
+    const logger: RetentionLogger = {
+      info: (bindings) => infoLogs.push(bindings),
+      warn: () => undefined,
+      error: (bindings) => errorLogs.push(bindings),
+    };
+
+    const brokenStorage: ObjectStorage = {
+      createUploadUrl: (input) => memoryStorage.createUploadUrl(input),
+      createDownloadUrl: (input) => memoryStorage.createDownloadUrl(input),
+      get: (key, opts) => memoryStorage.get(key, opts),
+      delete: async () => {
+        throw new Error("R2 AccessDenied");
+      },
+    };
+
+    // Exhaust maxAttempts = 2 -> task enters terminal "failed" state
+    const t0 = new Date("2026-11-16T18:00:00.000Z");
+    await runRetentionPass(
+      { db, storage: brokenStorage, logger },
+      { now: t0, baseBackoffMs: 100, maxBackoffMs: 1_000, maxAttempts: 2 },
+    );
+    await runRetentionPass(
+      { db, storage: brokenStorage, logger },
+      { now: new Date(t0.getTime() + 2_000), baseBackoffMs: 100, maxBackoffMs: 1_000, maxAttempts: 2 },
+    );
+
+    const beforeRequeue = await getRetentionBacklogSummary(db);
+    expect(beforeRequeue.permanentlyFailed).toBe(1);
+    expect(errorLogs.some((e) => e["event"] === "retention.permanent_failure")).toBe(true);
+
+    // Verify attachRetentionRuntime on a fresh unstarted Fastify instance in production config starts
+    // the 5-minute (300_000ms) scheduler and emits `retention.dead_letter_backlog` alerting!
+    const prodConfig: AppConfig = {
+      ...loadConfig({
+        NODE_ENV: "production",
+        LOG_LEVEL: "silent",
+        ALLOWED_ORIGINS: ORIGIN,
+      }),
+      cookieSecret: "test-cookie-secret-with-32-chars",
+    };
+    expect(prodConfig.retentionPollMs).toBe(300_000);
+
+    const prodApp = await buildApp({ config: prodConfig, db, storage: memoryStorage });
+    const attached = await attachRetentionRuntime(prodApp, {
+      config: prodConfig,
+      db,
+      storage: memoryStorage,
+      logger,
+    });
+    expect(attached.mode).toBe("scheduled");
+    expect(attached.scheduler?.pollMs).toBe(300_000);
+
+    // Wait briefly for the immediate startup tick of attachRetentionRuntime to log the dead-letter alert
+    const alertDeadline = Date.now() + 2_000;
+    while (
+      !errorLogs.some((e) => e["event"] === "retention.dead_letter_backlog") &&
+      Date.now() < alertDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    expect(errorLogs.some((e) => e["event"] === "retention.dead_letter_backlog")).toBe(true);
+
+    // CLI argument parser validation
+    const failedTask = (await pgliteDb.select().from(schema.retentionTasks))[0]!;
+    expect(parseRequeueCliArgs(["--task-id", failedTask.id, "--limit", "10", "--no-run"])).toEqual({
+      taskIds: [failedTask.id],
+      limit: 10,
+      runPassNow: false,
+    });
+    expect(() => parseRequeueCliArgs(["--task-id", "not-a-uuid"])).toThrow(/UUID/);
+
+    // Operator runs requeueFailedRetentionTasks after fixing R2 credentials -> resets attempts to 0 and state to pending
+    const requeued = await requeueFailedRetentionTasks(db, {
+      taskIds: [failedTask.id],
+      now: new Date(t0.getTime() + 5_000),
+      logger,
+    });
+    expect(requeued).toEqual({
+      requeuedCount: 1,
+      taskIds: [failedTask.id],
+    });
+    expect(infoLogs.some((e) => e["event"] === "retention.tasks_requeued")).toBe(true);
+
+    const requeueAudit = await pgliteDb
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.eventType, "retention_task_requeued"));
+    expect(requeueAudit).toHaveLength(1);
+    expect(requeueAudit[0]?.safeMetadata).toEqual({
+      previousAttempts: 2,
+      previousErrorCode: "STORAGE_DELETE_FAILED",
+    });
+
+    // Subsequent retention pass with healthy storage purges the requeued task completely
+    const recoveryPass = await runRetentionPass(
+      { db, storage: memoryStorage, logger },
+      { now: new Date(t0.getTime() + 5_000), maxAttempts: 2 },
+    );
+    expect(recoveryPass).toMatchObject({ processed: 1, succeeded: 1, permanentlyFailed: 0 });
+    expect(memoryStorage.has(uploaded.objectKey)).toBe(false);
+    expect((await getRetentionBacklogSummary(db)).permanentlyFailed).toBe(0);
+
+    // Closing the Fastify apps cleanly stops the attached production scheduler via onClose hook
+    await prodApp.close();
     await app.close();
     await client.close();
   });

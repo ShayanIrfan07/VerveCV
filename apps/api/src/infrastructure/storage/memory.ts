@@ -7,6 +7,11 @@ export interface SignedUpload {
 
 export interface StorageGetOptions {
   maxBytes?: number;
+  signal?: AbortSignal;
+}
+
+export interface StorageDeleteOptions {
+  signal?: AbortSignal;
 }
 
 export class StorageObjectTooLargeError extends Error {
@@ -20,7 +25,7 @@ export interface ObjectStorage {
   createUploadUrl(input: SignedUpload): Promise<string>;
   createDownloadUrl(input: { key: string; expiresInSeconds: number }): Promise<string>;
   get(key: string, options?: StorageGetOptions): Promise<Uint8Array | null>;
-  delete(key: string): Promise<void>;
+  delete(key: string, options?: StorageDeleteOptions): Promise<void>;
 }
 
 export class MemoryStorage implements ObjectStorage {
@@ -39,6 +44,9 @@ export class MemoryStorage implements ObjectStorage {
   }
 
   async get(key: string, options?: StorageGetOptions): Promise<Uint8Array | null> {
+    if (options?.signal?.aborted) {
+      throw new Error("Object storage read aborted");
+    }
     const found = this.objects.get(key) ?? null;
     if (found && options?.maxBytes !== undefined && found.byteLength > options.maxBytes) {
       throw new StorageObjectTooLargeError(options.maxBytes);
@@ -46,7 +54,10 @@ export class MemoryStorage implements ObjectStorage {
     return found;
   }
 
-  async delete(key: string): Promise<void> {
+  async delete(key: string, options?: StorageDeleteOptions): Promise<void> {
+    if (options?.signal?.aborted) {
+      throw new Error("Object storage delete aborted");
+    }
     this.objects.delete(key);
   }
 

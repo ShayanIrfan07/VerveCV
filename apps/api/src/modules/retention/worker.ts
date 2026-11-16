@@ -17,10 +17,25 @@ export const DEFAULT_RETENTION_BASE_BACKOFF_MS = 5_000;
 export const DEFAULT_RETENTION_MAX_BACKOFF_MS = 60 * 60 * 1000;
 export const DEFAULT_RETENTION_MAX_ATTEMPTS = 8;
 export const DEFAULT_PRODUCTION_RETENTION_POLL_MS = 5 * 60 * 1000;
+export const PURGED_OBJECT_KEY_PREFIX = "purged_";
 
 const DUE_STATES = ["pending", "retryable_failure"] as const;
 const OPEN_TASK_STATES = ["pending", "running", "retryable_failure"] as const;
 const EXPIRED_BATCH_SIZE = 100;
+
+export class RetentionStorageTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`Object storage delete timed out after ${timeoutMs}ms`);
+    this.name = "RetentionStorageTimeoutError";
+  }
+}
+
+export class RetentionLeaseLostError extends Error {
+  constructor() {
+    super("Retention task lease was lost or reclaimed by another worker");
+    this.name = "RetentionLeaseLostError";
+  }
+}
 
 export interface RetentionLogger {
   info?: (bindings: Record<string, unknown>, msg?: string) => void;
@@ -46,6 +61,8 @@ export interface RetentionPassOptions {
   now?: Date;
   workerId?: string;
   leaseMs?: number;
+  storageDeleteTimeoutMs?: number;
+  leaseRenewIntervalMs?: number | null;
   baseBackoffMs?: number;
   maxBackoffMs?: number;
   maxAttempts?: number;
@@ -70,8 +87,21 @@ export interface RetentionBacklogSummary {
   permanentlyFailed: number;
 }
 
+export interface RequeueFailedTasksOptions {
+  taskIds?: readonly string[];
+  limit?: number;
+  now?: Date;
+  logger?: RetentionLogger;
+}
+
+export interface RequeueFailedTasksResult {
+  requeuedCount: number;
+  taskIds: string[];
+}
+
 export interface RetentionSchedulerHandle {
   readonly workerId: string;
+  readonly pollMs: number;
   stop(): Promise<void>;
 }
 
@@ -140,6 +170,94 @@ export async function getRetentionBacklogSummary(db: Database): Promise<Retentio
   return summary;
 }
 
+/**
+ * Safely requeues permanently failed (`state = 'failed'`) retention tasks for operator
+ * recovery after fixing an underlying R2 credential, bucket policy, or network outage.
+ *
+ * Resets `state = 'pending'`, `attempts = 0`, `lease_owner = null`, `lease_until = null`,
+ * and `last_error_code = null` under `FOR UPDATE SKIP LOCKED`, and records a minimal
+ * non-PII `retention_task_requeued` audit event per requeued version.
+ */
+export async function requeueFailedRetentionTasks(
+  db: Database,
+  options: RequeueFailedTasksOptions = {},
+): Promise<RequeueFailedTasksResult> {
+  const now = options.now ?? new Date();
+  const limit = options.limit ?? 100;
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error("limit must be a positive integer");
+  }
+  if (options.taskIds !== undefined && options.taskIds.length === 0) {
+    return { requeuedCount: 0, taskIds: [] };
+  }
+
+  const requeued = await db.transaction(async (tx) => {
+    const conditions = [eq(retentionTasks.state, "failed")];
+    if (options.taskIds !== undefined) {
+      conditions.push(inArray(retentionTasks.id, [...options.taskIds]));
+    }
+
+    const targets = await tx
+      .select({
+        id: retentionTasks.id,
+        resumeVersionId: retentionTasks.resumeVersionId,
+        previousAttempts: retentionTasks.attempts,
+        previousErrorCode: retentionTasks.lastErrorCode,
+      })
+      .from(retentionTasks)
+      .where(and(...conditions))
+      .orderBy(asc(retentionTasks.nextAttemptAt), asc(retentionTasks.id))
+      .limit(limit)
+      .for("update", { skipLocked: true });
+
+    if (targets.length === 0) {
+      return [];
+    }
+
+    const targetIds = targets.map((row) => row.id);
+    await tx
+      .update(retentionTasks)
+      .set({
+        state: "pending",
+        attempts: 0,
+        leaseOwner: null,
+        leaseUntil: null,
+        nextAttemptAt: now,
+        lastErrorCode: null,
+      })
+      .where(and(inArray(retentionTasks.id, targetIds), eq(retentionTasks.state, "failed")));
+
+    await tx.insert(auditEvents).values(
+      targets.map((row) => ({
+        userId: null,
+        eventType: "retention_task_requeued",
+        targetId: row.resumeVersionId,
+        safeMetadata: {
+          previousAttempts: row.previousAttempts,
+          previousErrorCode: row.previousErrorCode,
+        },
+      })),
+    );
+
+    return targets;
+  });
+
+  if (requeued.length > 0) {
+    options.logger?.info?.(
+      {
+        event: "retention.tasks_requeued",
+        requeuedCount: requeued.length,
+      },
+      "requeued permanently failed retention tasks",
+    );
+  }
+
+  return {
+    requeuedCount: requeued.length,
+    taskIds: requeued.map((row) => row.id),
+  };
+}
+
 export async function runRetentionPass(
   deps: RetentionDeps,
   options: RetentionPassOptions = {},
@@ -154,6 +272,21 @@ export async function runRetentionPass(
   if (!Number.isInteger(leaseMs) || leaseMs < 1) {
     throw new Error("leaseMs must be a positive integer");
   }
+  const defaultDeleteTimeoutMs = Math.max(1, Math.min(30_000, Math.floor(leaseMs * 0.8)));
+  const storageDeleteTimeoutMs = options.storageDeleteTimeoutMs ?? defaultDeleteTimeoutMs;
+  if (!Number.isInteger(storageDeleteTimeoutMs) || storageDeleteTimeoutMs < 1) {
+    throw new Error("storageDeleteTimeoutMs must be a positive integer");
+  }
+  const defaultRenewMs = leaseMs >= 30 ? Math.max(10, Math.floor(leaseMs / 3)) : null;
+  const leaseRenewIntervalMs =
+    options.leaseRenewIntervalMs === undefined ? defaultRenewMs : options.leaseRenewIntervalMs;
+  if (
+    leaseRenewIntervalMs !== null &&
+    (!Number.isInteger(leaseRenewIntervalMs) || leaseRenewIntervalMs < 1)
+  ) {
+    throw new Error("leaseRenewIntervalMs must be a positive integer or null");
+  }
+
   if (!Number.isInteger(baseBackoffMs) || baseBackoffMs < 1) {
     throw new Error("baseBackoffMs must be a positive integer");
   }
@@ -199,8 +332,11 @@ export async function runRetentionPass(
     }
 
     const outcome = await purgeTask(deps, claim.task, {
-      now: stepNow,
+      currentNow,
       workerId,
+      leaseMs,
+      storageDeleteTimeoutMs,
+      leaseRenewIntervalMs,
       baseBackoffMs,
       maxBackoffMs,
       maxAttempts,
@@ -232,6 +368,8 @@ export function startRetentionScheduler(
   config: {
     pollMs: number;
     leaseMs?: number;
+    storageDeleteTimeoutMs?: number;
+    leaseRenewIntervalMs?: number | null;
     baseBackoffMs?: number;
     maxBackoffMs?: number;
     maxAttempts?: number;
@@ -257,6 +395,12 @@ export function startRetentionScheduler(
         const result = await runRetentionPass(deps, {
           workerId,
           ...(config.leaseMs !== undefined ? { leaseMs: config.leaseMs } : {}),
+          ...(config.storageDeleteTimeoutMs !== undefined
+            ? { storageDeleteTimeoutMs: config.storageDeleteTimeoutMs }
+            : {}),
+          ...(config.leaseRenewIntervalMs !== undefined
+            ? { leaseRenewIntervalMs: config.leaseRenewIntervalMs }
+            : {}),
           ...(config.baseBackoffMs !== undefined ? { baseBackoffMs: config.baseBackoffMs } : {}),
           ...(config.maxBackoffMs !== undefined ? { maxBackoffMs: config.maxBackoffMs } : {}),
           ...(config.maxAttempts !== undefined ? { maxAttempts: config.maxAttempts } : {}),
@@ -311,6 +455,7 @@ export function startRetentionScheduler(
 
   return {
     workerId,
+    pollMs: config.pollMs,
     async stop(): Promise<void> {
       stopped = true;
       clearInterval(timer);
@@ -340,7 +485,10 @@ async function enqueueExpiredVersions(db: Database, now: Date): Promise<number> 
       const candidateIds = candidates.map((row) => row.id);
       const transitioned = await tx
         .update(resumeVersions)
-        .set({ deletionState: "delete_requested" })
+        .set({
+          deletionState: "delete_requested",
+          originalFilename: "deleted",
+        })
         .where(
           and(
             inArray(resumeVersions.id, candidateIds),
@@ -477,16 +625,18 @@ async function claimTask(
     }
 
     if (candidate.attempts >= maxAttempts) {
+      const errorCode =
+        candidate.state === "running"
+          ? "LEASE_EXPIRED_MAX_ATTEMPTS"
+          : "MAX_ATTEMPTS_EXCEEDED";
+
       await tx
         .update(retentionTasks)
         .set({
           state: "failed",
           leaseOwner: null,
           leaseUntil: null,
-          lastErrorCode:
-            candidate.state === "running"
-              ? "LEASE_EXPIRED_MAX_ATTEMPTS"
-              : "MAX_ATTEMPTS_EXCEEDED",
+          lastErrorCode: errorCode,
         })
         .where(eq(retentionTasks.id, candidate.id));
 
@@ -496,10 +646,7 @@ async function claimTask(
         targetId: candidate.resumeVersionId,
         safeMetadata: {
           attempts: candidate.attempts,
-          errorCode:
-            candidate.state === "running"
-              ? "LEASE_EXPIRED_MAX_ATTEMPTS"
-              : "MAX_ATTEMPTS_EXCEEDED",
+          errorCode,
         },
       });
 
@@ -537,12 +684,128 @@ async function claimTask(
   });
 }
 
+function ownerAttemptFence(taskId: string, workerId: string, attempts: number) {
+  return and(
+    eq(retentionTasks.id, taskId),
+    eq(retentionTasks.state, "running"),
+    eq(retentionTasks.leaseOwner, workerId),
+    eq(retentionTasks.attempts, attempts),
+  );
+}
+
+async function renewTaskLease(
+  db: Database,
+  task: { id: string; attempts: number },
+  workerId: string,
+  leaseUntil: Date,
+): Promise<boolean> {
+  const renewed = await db
+    .update(retentionTasks)
+    .set({ leaseUntil })
+    .where(ownerAttemptFence(task.id, workerId, task.attempts))
+    .returning({ id: retentionTasks.id });
+  return renewed.length > 0;
+}
+
+async function deleteObjectWithLeaseProtection(
+  deps: RetentionDeps,
+  objectKey: string,
+  task: { id: string; attempts: number },
+  context: {
+    currentNow: () => Date;
+    workerId: string;
+    leaseMs: number;
+    storageDeleteTimeoutMs: number;
+    leaseRenewIntervalMs: number | null;
+  },
+): Promise<void> {
+  // Already scrubbed placeholder keys require no R2 network call.
+  if (objectKey.startsWith(PURGED_OBJECT_KEY_PREFIX)) {
+    return;
+  }
+
+  const abortController = new AbortController();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let renewTimer: ReturnType<typeof setInterval> | undefined;
+  let renewInFlight = false;
+  let leaseLost = false;
+  let rejectLeaseLost: ((error: Error) => void) | null = null;
+
+  const leaseLostPromise = new Promise<never>((_, reject) => {
+    rejectLeaseLost = reject;
+  });
+
+  if (context.leaseRenewIntervalMs !== null) {
+    renewTimer = setInterval(() => {
+      if (renewInFlight || abortController.signal.aborted) {
+        return;
+      }
+      renewInFlight = true;
+      const nextLeaseUntil = new Date(context.currentNow().getTime() + context.leaseMs);
+      void renewTaskLease(deps.db, task, context.workerId, nextLeaseUntil)
+        .then((stillOwned) => {
+          if (!stillOwned && !abortController.signal.aborted) {
+            leaseLost = true;
+            abortController.abort();
+            rejectLeaseLost?.(new RetentionLeaseLostError());
+          }
+        })
+        .catch((error: unknown) => {
+          deps.logger?.warn(
+            { event: "retention.lease_renew_failed", taskId: task.id, err: error },
+            "failed to extend retention task lease during storage delete",
+          );
+        })
+        .finally(() => {
+          renewInFlight = false;
+        });
+    }, context.leaseRenewIntervalMs);
+    renewTimer.unref();
+  }
+
+  let timedOut = false;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      abortController.abort();
+      reject(new RetentionStorageTimeoutError(context.storageDeleteTimeoutMs));
+    }, context.storageDeleteTimeoutMs);
+    timeoutHandle.unref();
+  });
+
+  try {
+    await Promise.race([
+      deps.storage.delete(objectKey, { signal: abortController.signal }),
+      timeoutPromise,
+      leaseLostPromise,
+    ]);
+  } catch (error) {
+    if (leaseLost) {
+      throw new RetentionLeaseLostError();
+    }
+    if (timedOut) {
+      throw new RetentionStorageTimeoutError(context.storageDeleteTimeoutMs);
+    }
+    throw error;
+  } finally {
+    if (timeoutHandle !== undefined) {
+      clearTimeout(timeoutHandle);
+    }
+    if (renewTimer !== undefined) {
+      clearInterval(renewTimer);
+    }
+  }
+}
+
 async function purgeTask(
   deps: RetentionDeps,
   task: { id: string; resumeVersionId: string; attempts: number },
   context: {
-    now: Date;
+    currentNow: () => Date;
     workerId: string;
+    leaseMs: number;
+    storageDeleteTimeoutMs: number;
+    leaseRenewIntervalMs: number | null;
     baseBackoffMs: number;
     maxBackoffMs: number;
     maxAttempts: number;
@@ -563,44 +826,41 @@ async function purgeTask(
 
   const version = versions[0];
   if (!version) {
+    const commitNow = context.currentNow();
     const updated = await deps.db
       .update(retentionTasks)
       .set({
         state: "succeeded",
-        completedAt: context.now,
+        completedAt: commitNow,
         leaseOwner: null,
         leaseUntil: null,
         lastErrorCode: null,
       })
-      .where(
-        and(
-          eq(retentionTasks.id, task.id),
-          eq(retentionTasks.state, "running"),
-          eq(retentionTasks.leaseOwner, context.workerId),
-        ),
-      )
+      .where(ownerAttemptFence(task.id, context.workerId, task.attempts))
       .returning({ id: retentionTasks.id });
     return updated.length > 0 ? "succeeded" : "fenced";
   }
 
   try {
-    await deps.storage.delete(version.objectKey);
-  } catch {
-    return handleTaskError(deps, task, version.id, context, "STORAGE_DELETE_FAILED");
+    await deleteObjectWithLeaseProtection(deps, version.objectKey, task, context);
+  } catch (error) {
+    if (error instanceof RetentionLeaseLostError) {
+      return "fenced";
+    }
+    const errorCode =
+      error instanceof RetentionStorageTimeoutError
+        ? "STORAGE_DELETE_TIMEOUT"
+        : "STORAGE_DELETE_FAILED";
+    return handleTaskError(deps, task, version.id, context, errorCode);
   }
 
   try {
+    const commitNow = context.currentNow();
     const committed = await deps.db.transaction(async (tx) => {
       const leaseCheck = await tx
         .select({ id: retentionTasks.id })
         .from(retentionTasks)
-        .where(
-          and(
-            eq(retentionTasks.id, task.id),
-            eq(retentionTasks.state, "running"),
-            eq(retentionTasks.leaseOwner, context.workerId),
-          ),
-        )
+        .where(ownerAttemptFence(task.id, context.workerId, task.attempts))
         .for("update")
         .limit(1);
 
@@ -624,6 +884,7 @@ async function purgeTask(
         .set({
           deletionState: "deleted",
           originalFilename: "deleted",
+          objectKey: `${PURGED_OBJECT_KEY_PREFIX}${version.id}`,
           sha256: "deleted",
           sizeBytes: 0,
           parserVersion: null,
@@ -653,8 +914,8 @@ async function purgeTask(
           await tx
             .update(resumes)
             .set({
-              deletedAt: parent.deletedAt ?? context.now,
-              updatedAt: context.now,
+              deletedAt: parent.deletedAt ?? commitNow,
+              updatedAt: commitNow,
               title: "deleted",
               candidateType: null,
             })
@@ -666,7 +927,7 @@ async function purgeTask(
         .update(retentionTasks)
         .set({
           state: "succeeded",
-          completedAt: context.now,
+          completedAt: commitNow,
           leaseOwner: null,
           leaseUntil: null,
           lastErrorCode: null,
@@ -696,7 +957,7 @@ async function handleTaskError(
   task: { id: string; resumeVersionId: string; attempts: number },
   versionId: string,
   context: {
-    now: Date;
+    currentNow: () => Date;
     workerId: string;
     baseBackoffMs: number;
     maxBackoffMs: number;
@@ -706,6 +967,8 @@ async function handleTaskError(
   },
   errorCode: string,
 ): Promise<"retried" | "failed" | "fenced"> {
+  const errorNow = context.currentNow();
+
   if (task.attempts >= context.maxAttempts) {
     const markedFailed = await deps.db.transaction(async (tx) => {
       const updated = await tx
@@ -716,13 +979,7 @@ async function handleTaskError(
           leaseUntil: null,
           lastErrorCode: errorCode,
         })
-        .where(
-          and(
-            eq(retentionTasks.id, task.id),
-            eq(retentionTasks.state, "running"),
-            eq(retentionTasks.leaseOwner, context.workerId),
-          ),
-        )
+        .where(ownerAttemptFence(task.id, context.workerId, task.attempts))
         .returning({ id: retentionTasks.id });
 
       if (updated.length === 0) {
@@ -761,7 +1018,7 @@ async function handleTaskError(
     maxBackoffMs: context.maxBackoffMs,
     ...(context.random ? { random: context.random } : {}),
   });
-  const nextAttemptAt = new Date(context.now.getTime() + backoffMs);
+  const nextAttemptAt = new Date(errorNow.getTime() + backoffMs);
 
   const updated = await deps.db
     .update(retentionTasks)
@@ -772,13 +1029,7 @@ async function handleTaskError(
       nextAttemptAt,
       lastErrorCode: errorCode,
     })
-    .where(
-      and(
-        eq(retentionTasks.id, task.id),
-        eq(retentionTasks.state, "running"),
-        eq(retentionTasks.leaseOwner, context.workerId),
-      ),
-    )
+    .where(ownerAttemptFence(task.id, context.workerId, task.attempts))
     .returning({ id: retentionTasks.id });
 
   if (updated.length === 0) {
