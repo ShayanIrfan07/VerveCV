@@ -94,6 +94,93 @@ function clampUtf16Slice(text: string, start: number, end: number): NormalizedSp
   return safeEnd > safeStart ? { startOffset: safeStart, endOffset: safeEnd } : null;
 }
 
+const MARKDOWN_LINK = /\[([^\][]+)\]\(([^()\s]+)\)/gu;
+
+export interface DisplayPiece {
+  rawStart: number;
+  rawEnd: number;
+  text: string;
+  visible: boolean;
+}
+
+/**
+ * Splits Markdown links for display. The raw string, including `[label](url)`, stays the
+ * authoritative text so UTF-16 evidence offsets do not move.
+ */
+export function displayPieces(text: string): DisplayPiece[] {
+  const pieces: DisplayPiece[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(MARKDOWN_LINK)) {
+    const start = match.index ?? 0;
+    const label = match[1] ?? "";
+    const full = match[0] ?? "";
+    if (label.length === 0 || full.length === 0) {
+      continue;
+    }
+    if (start > cursor) {
+      pieces.push({
+        rawStart: cursor,
+        rawEnd: start,
+        text: text.slice(cursor, start),
+        visible: true,
+      });
+    }
+    const labelStart = start + 1;
+    const labelEnd = labelStart + label.length;
+    pieces.push({ rawStart: start, rawEnd: labelStart, text: "[", visible: false });
+    pieces.push({ rawStart: labelStart, rawEnd: labelEnd, text: label, visible: true });
+    pieces.push({
+      rawStart: labelEnd,
+      rawEnd: start + full.length,
+      text: text.slice(labelEnd, start + full.length),
+      visible: false,
+    });
+    cursor = start + full.length;
+  }
+  if (cursor < text.length || pieces.length === 0) {
+    pieces.push({
+      rawStart: cursor,
+      rawEnd: text.length,
+      text: text.slice(cursor),
+      visible: true,
+    });
+  }
+  return pieces;
+}
+
+export interface CoverageSlice {
+  start: number;
+  end: number;
+  depth: number;
+}
+
+/** Splits a string at evidence boundaries, including overlaps, without rewriting the text. */
+export function coverageSlices(length: number, spans: readonly NormalizedSpan[]): CoverageSlice[] {
+  if (length <= 0) {
+    return [];
+  }
+  const normalized = spans
+    .map((span) => ({
+      start: Math.max(0, Math.min(length, Math.trunc(span.startOffset))),
+      end: Math.max(0, Math.min(length, Math.trunc(span.endOffset))),
+    }))
+    .filter((span) => span.end > span.start);
+  const bounds = new Set<number>([0, length]);
+  for (const span of normalized) {
+    bounds.add(span.start);
+    bounds.add(span.end);
+  }
+  const points = [...bounds].sort((left, right) => left - right);
+  const slices: CoverageSlice[] = [];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index]!;
+    const end = points[index + 1]!;
+    const depth = normalized.filter((span) => span.start <= start && span.end >= end).length;
+    slices.push({ start, end, depth });
+  }
+  return slices;
+}
+
 /**
  * Computes PDF highlight rectangles for a target block + optional UTF-16 sub-span.
  *
@@ -187,10 +274,10 @@ export function computePdfHighlightBoxes(
 }
 
 export function PreviewView({ document, fileBytes, highlight = null }: PreviewViewProps) {
-  const [selectedId, setSelectedId] = useState<string | null>(document.blocks[0]?.id ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
-    setSelectedId(document.blocks[0]?.id ?? null);
+    setSelectedId(null);
   }, [document]);
 
   const activeBlockId = highlight?.blockId ?? selectedId;
@@ -199,13 +286,16 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
     highlight && activeBlock && highlight.blockId === activeBlock.id ? highlight : null;
   const activeSpan = activeBlock ? resolveBlockSpan(activeBlock, activeLocator) : null;
   const docx = document.mimeType !== "application/pdf";
+  const evidenceBlock = highlight
+    ? (document.blocks.find((block) => block.id === highlight.blockId) ?? null)
+    : null;
 
   const pdfGeometry =
-    !docx && fileBytes ? computePdfHighlightBoxes(activeBlock, activeLocator) : null;
+    !docx && fileBytes && highlight ? computePdfHighlightBoxes(evidenceBlock, highlight) : null;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
-      <div className="rounded-2xl border border-slate-200 bg-white p-4">
+    <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+      <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4">
         {docx || !fileBytes ? (
           <DocxPreview
             activeBlockId={activeBlockId}
@@ -226,27 +316,39 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
           Extracted text
         </h2>
-        <ul className="mt-3 grid gap-2">
-          {document.blocks.map((block) => {
-            const isTarget = activeBlockId === block.id;
-            const spanForBlock = isTarget ? activeSpan : null;
-            return (
-              <li key={block.id}>
-                <button
-                  className={`w-full rounded-lg px-3 py-2 text-left text-sm ${
-                    isTarget ? "bg-amber-100 ring-1 ring-amber-400" : "bg-slate-50"
-                  }`}
-                  data-block-id={block.id}
-                  onClick={() => setSelectedId(block.id)}
-                  onMouseEnter={() => setSelectedId(block.id)}
-                  type="button"
-                >
-                  <HighlightedText span={spanForBlock} text={block.text} />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+        <div className="mt-4 space-y-5">
+          {document.sections.map((section) => (
+            <section className="space-y-1" data-section-id={section.id} key={section.id}>
+              {section.blockIds.map((blockId) => {
+                const block = document.blocks.find((item) => item.id === blockId);
+                if (!block) {
+                  return null;
+                }
+                const isTarget = activeBlockId === block.id;
+                const spanForBlock = isTarget ? activeSpan : null;
+                return (
+                  <button
+                    className={extractedBlockClass(block.type, isTarget && spanForBlock === null)}
+                    data-block-id={block.id}
+                    data-block-type={block.type}
+                    data-raw-length={block.text.length}
+                    key={block.id}
+                    onClick={() => setSelectedId(block.id)}
+                    onMouseEnter={() => setSelectedId(block.id)}
+                    type="button"
+                  >
+                    {block.type === "bullet" ? (
+                      <span aria-hidden="true" className="mr-2 text-slate-400">
+                        •
+                      </span>
+                    ) : null}
+                    <EvidenceText spans={spanForBlock ? [spanForBlock] : []} text={block.text} />
+                  </button>
+                );
+              })}
+            </section>
+          ))}
+        </div>
         {activeBlock ? (
           <p className="mt-4 text-xs text-slate-500" data-testid="utf16-offset-caption">
             {activeSpan
@@ -259,26 +361,62 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
   );
 }
 
-function HighlightedText({
+function extractedBlockClass(type: string, quietSelection: boolean): string {
+  const selection = quietSelection ? "border-l-2 border-slate-300 pl-2" : "";
+  if (type === "heading") {
+    return `block w-full whitespace-pre-wrap break-words py-1 text-left text-base font-semibold leading-6 text-slate-950 ${selection}`;
+  }
+  if (type === "bullet") {
+    return `block w-full whitespace-pre-wrap break-words py-0.5 pl-1 text-left text-sm leading-6 text-slate-800 ${selection}`;
+  }
+  return `block w-full whitespace-pre-wrap break-words py-0.5 text-left text-sm leading-6 text-slate-800 ${selection}`;
+}
+
+export function EvidenceText({
   text,
-  span,
+  spans,
 }: {
   text: string;
-  span: NormalizedSpan | null;
+  spans: readonly NormalizedSpan[];
 }) {
-  if (!span) {
-    return <>{text}</>;
-  }
-  const before = text.slice(0, span.startOffset);
-  const target = text.slice(span.startOffset, span.endOffset);
-  const after = text.slice(span.endOffset);
+  const pieces = displayPieces(text);
+  const coverage = coverageSlices(text.length, spans);
   return (
     <>
-      {before}
-      <mark className="rounded bg-amber-300 px-0.5 text-slate-950" data-testid="utf16-highlight-mark">
-        {target}
-      </mark>
-      {after}
+      {pieces.map((piece) => {
+        const parts = coverage.filter((slice) => slice.end > piece.rawStart && slice.start < piece.rawEnd);
+        const chunks = parts.length > 0 ? parts : [{ start: piece.rawStart, end: piece.rawEnd, depth: 0 }];
+        return chunks.map((chunk) => {
+          const start = Math.max(chunk.start, piece.rawStart);
+          const end = Math.min(chunk.end, piece.rawEnd);
+          const value = text.slice(start, end);
+          const marked = chunk.depth > 0;
+          return (
+            <span
+              className={piece.visible ? undefined : "hidden"}
+              data-markdown-syntax={piece.visible ? undefined : "true"}
+              data-visible-text={piece.visible ? "true" : undefined}
+              key={`${piece.rawStart}-${start}-${end}`}
+            >
+              {marked ? (
+                <mark
+                  className={
+                    chunk.depth > 1
+                      ? "bg-amber-200/70 text-inherit underline decoration-amber-700 decoration-2 underline-offset-2"
+                      : "bg-amber-100/60 text-inherit underline decoration-amber-600/80 underline-offset-2"
+                  }
+                  data-evidence-depth={chunk.depth}
+                  data-testid="utf16-highlight-mark"
+                >
+                  {value}
+                </mark>
+              ) : (
+                value
+              )}
+            </span>
+          );
+        });
+      })}
     </>
   );
 }
@@ -310,15 +448,19 @@ function DocxPreview({
             const spanForBlock = isTarget ? activeSpan : null;
             return (
               <p
-                className={`mt-2 rounded px-2 py-1 ${
-                  isTarget && !spanForBlock ? "bg-amber-200" : isTarget ? "bg-amber-50" : ""
-                }`}
+                className={`mt-2 whitespace-pre-wrap break-words leading-7 ${
+                  block.type === "heading"
+                    ? "text-base font-semibold text-slate-950"
+                    : block.type === "bullet"
+                      ? "pl-4 text-sm text-slate-800"
+                      : "text-sm text-slate-800"
+                } ${isTarget && !spanForBlock ? "border-l-2 border-slate-300 pl-3" : ""}`}
                 data-paragraph-id={block.paragraphId ?? block.id}
                 key={block.id}
                 onClick={() => onSelect(block.id)}
                 onMouseEnter={() => onSelect(block.id)}
               >
-                <HighlightedText span={spanForBlock} text={block.text} />
+                <EvidenceText spans={spanForBlock ? [spanForBlock] : []} text={block.text} />
               </p>
             );
           })}
@@ -407,21 +549,22 @@ function PdfPage({
 
   return (
     <div
-      className="relative inline-block bg-slate-100"
-      style={{ width: width * SCALE, height: height * SCALE }}
+      className="relative mx-auto w-full max-w-full bg-slate-100"
+      style={{ maxWidth: width * SCALE, aspectRatio: `${width} / ${height}` }}
     >
-      <canvas ref={setCanvas} />
+      <canvas className="absolute inset-0 h-full w-full" ref={setCanvas} />
       {boxes.map((box, index) => (
         <span
-          className="pointer-events-none absolute border-2 border-amber-500 bg-amber-300/40"
+          className="pointer-events-none absolute border-b-2 border-amber-700/80 bg-amber-200/15"
           data-precision={box.precision}
           data-testid="pdf-highlight-box"
           key={`${box.x}-${box.y}-${index}`}
           style={{
-            left: box.x * SCALE,
-            top: (height - box.y - box.height) * SCALE,
-            width: box.width * SCALE,
-            height: box.height * SCALE,
+            left: `${(box.x / width) * 100}%`,
+            top: `${((height - box.y - box.height) / height) * 100}%`,
+            width: `${(box.width / width) * 100}%`,
+            height: `${(box.height / height) * 100}%`,
+            mixBlendMode: "multiply",
           }}
         />
       ))}

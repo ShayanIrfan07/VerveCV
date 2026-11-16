@@ -454,7 +454,7 @@ export function UploadPanel({
       : null;
 
   return (
-    <section className="grid gap-4">
+    <section className="grid min-w-0 gap-4">
       <div className="rounded-2xl border border-slate-200 bg-white p-5">
         <h2 className="text-lg font-semibold text-slate-950">Resume</h2>
         <p className="mt-2 text-sm leading-6 text-slate-700">{status}</p>
