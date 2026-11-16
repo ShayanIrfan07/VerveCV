@@ -669,6 +669,41 @@ describe("authentication", () => {
     await app.close();
   });
 
+  it("returns 503 when PostgreSQL rejects the database login and keeps the role error off the response", async () => {
+    const cause = Object.assign(new Error("password authentication failed for user 'neondb_owner'"), {
+      code: "28P01",
+    });
+    const brokenDb = {
+      select: () => {
+        throw Object.assign(new Error("Failed query"), { cause });
+      },
+    } as unknown as Database;
+    const config = {
+      ...loadConfig({ LOG_LEVEL: "silent", ALLOWED_ORIGINS: ORIGIN }),
+      cookieSecret: "test-cookie-secret-with-32-chars",
+    };
+    const app = await buildApp({ config, db: brokenDb });
+
+    const loginFailure = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { origin: ORIGIN },
+      payload: { email: "ada@example.com", password: "correct-horse" },
+    });
+    expect(loginFailure.statusCode).toBe(503);
+    expect(loginFailure.json()).toEqual({
+      error: {
+        code: "DATABASE_UNAVAILABLE",
+        message: "Database is unavailable",
+        requestId: expect.any(String),
+      },
+    });
+    expect(JSON.stringify(loginFailure.json())).not.toContain("neondb_owner");
+    expect(JSON.stringify(loginFailure.json())).not.toContain("28P01");
+
+    await app.close();
+  });
+
   it("does not expose another user's session", async () => {
     const { app, client } = await createTestApp();
     await app.inject({

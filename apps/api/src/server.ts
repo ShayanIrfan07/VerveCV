@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./infrastructure/db/client.js";
@@ -8,6 +11,11 @@ import {
   type RetentionSchedulerHandle,
 } from "./modules/retention/worker.js";
 import { ParseGate } from "./modules/uploads/parse-gate.js";
+
+const localEnvFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.env");
+if (existsSync(localEnvFile)) {
+  process.loadEnvFile(localEnvFile);
+}
 
 const config = loadConfig();
 if (!config.cookieSecret || config.cookieSecret.length < 32) {
