@@ -1,6 +1,13 @@
 import { MAX_SIGNED_URL_TTL_SECONDS } from "./infrastructure/storage/r2.js";
 import type { AuthRateLimits, RateLimitRule } from "./modules/auth/rate-limit.js";
 import {
+  DEFAULT_PRODUCTION_RETENTION_POLL_MS,
+  DEFAULT_RETENTION_BASE_BACKOFF_MS,
+  DEFAULT_RETENTION_LEASE_MS,
+  DEFAULT_RETENTION_MAX_ATTEMPTS,
+  DEFAULT_RETENTION_MAX_BACKOFF_MS,
+} from "./modules/retention/worker.js";
+import {
   DEFAULT_PARSE_MAX_QUEUE,
   DEFAULT_PARSE_QUEUE_TIMEOUT_MS,
 } from "./modules/uploads/parse-gate.js";
@@ -29,6 +36,10 @@ export interface AppConfig {
   uploadRateLimit: RateLimitRule | null;
   evaluateRateLimit: RateLimitRule | null;
   retentionPollMs: number | null;
+  retentionLeaseMs: number;
+  retentionBaseBackoffMs: number;
+  retentionMaxBackoffMs: number;
+  retentionMaxAttempts: number;
   r2: {
     accountId: string;
     accessKeyId: string;
@@ -37,13 +48,21 @@ export interface AppConfig {
   } | null;
 }
 
-/** Operational defaults until ADR 0001 item A7 approves session, rate-limit, and parser settings. */
+/** Operational defaults until ADR 0001 item A7 approves session, rate-limit, and worker settings. */
 const DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60;
 const DEFAULT_AUTH_RATE_LIMIT_WINDOW_SECONDS = 60;
 const DEFAULT_AUTH_RATE_LIMIT_REGISTER_MAX = 5;
 const DEFAULT_AUTH_RATE_LIMIT_LOGIN_IP_MAX = 10;
 const DEFAULT_AUTH_RATE_LIMIT_LOGIN_ACCOUNT_MAX = 5;
 const DEFAULT_AUTH_RATE_LIMIT_REFRESH_MAX = 20;
+const DEFAULT_PRODUCTION_UPLOAD_RATE_LIMIT: RateLimitRule = {
+  max: 10,
+  windowMs: 60_000,
+};
+const DEFAULT_PRODUCTION_EVALUATE_RATE_LIMIT: RateLimitRule = {
+  max: 10,
+  windowMs: 60_000,
+};
 /** Approved upload ceiling from the low-level design. It is separate from the dependency budget. */
 const DEFAULT_UPLOAD_LIMIT_BYTES = 5 * 1024 * 1024;
 /** Operational bounds preventing unbounded pending upload intent accumulation. */
@@ -51,6 +70,7 @@ const DEFAULT_MAX_PENDING_UPLOADS_PER_USER = 10;
 const DEFAULT_UPLOAD_INTENT_GRACE_SECONDS = 60;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+  const isProduction = env["NODE_ENV"] === "production";
   const port = readPort(env["PORT"]);
   const host = env["HOST"]?.trim() || "0.0.0.0";
   const databaseUrl = env["DATABASE_URL"]?.trim() || null;
@@ -102,6 +122,37 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
   };
 
+  const retentionLeaseMs = readPositiveInt(
+    env["RETENTION_LEASE_MS"],
+    DEFAULT_RETENTION_LEASE_MS,
+    "RETENTION_LEASE_MS",
+  );
+  const retentionBaseBackoffMs = readPositiveInt(
+    env["RETENTION_BASE_BACKOFF_MS"],
+    DEFAULT_RETENTION_BASE_BACKOFF_MS,
+    "RETENTION_BASE_BACKOFF_MS",
+  );
+  const retentionMaxBackoffMs = readPositiveInt(
+    env["RETENTION_MAX_BACKOFF_MS"],
+    Math.max(DEFAULT_RETENTION_MAX_BACKOFF_MS, retentionBaseBackoffMs),
+    "RETENTION_MAX_BACKOFF_MS",
+  );
+  if (retentionMaxBackoffMs < retentionBaseBackoffMs) {
+    throw new Error("RETENTION_MAX_BACKOFF_MS must be >= RETENTION_BASE_BACKOFF_MS");
+  }
+  const retentionMaxAttempts = readPositiveInt(
+    env["RETENTION_MAX_ATTEMPTS"],
+    DEFAULT_RETENTION_MAX_ATTEMPTS,
+    "RETENTION_MAX_ATTEMPTS",
+  );
+
+  const explicitRetentionPollMs = readOptionalPositiveInt(
+    env["RETENTION_POLL_MS"],
+    "RETENTION_POLL_MS",
+  );
+  const retentionPollMs =
+    explicitRetentionPollMs ?? (isProduction ? DEFAULT_PRODUCTION_RETENTION_POLL_MS : null);
+
   return {
     host,
     port,
@@ -114,7 +165,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       DEFAULT_SESSION_TTL_SECONDS,
       "SESSION_TTL_SECONDS",
     ),
-    secureCookies: env["NODE_ENV"] === "production",
+    secureCookies: isProduction,
     authRateLimits,
     uploadLimitBytes: readPositiveInt(
       env["UPLOAD_LIMIT_BYTES"],
@@ -150,9 +201,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       DEFAULT_UPLOAD_INTENT_GRACE_SECONDS,
       "UPLOAD_INTENT_GRACE_SECONDS",
     ),
-    uploadRateLimit: readOptionalRateLimit(env, "UPLOAD_RATE_LIMIT_MAX", "UPLOAD_RATE_LIMIT_WINDOW_SECONDS"),
-    evaluateRateLimit: readOptionalRateLimit(env, "EVALUATE_RATE_LIMIT_MAX", "EVALUATE_RATE_LIMIT_WINDOW_SECONDS"),
-    retentionPollMs: readOptionalPositiveInt(env["RETENTION_POLL_MS"], "RETENTION_POLL_MS"),
+    uploadRateLimit: readRateLimit(
+      env,
+      "UPLOAD_RATE_LIMIT_MAX",
+      "UPLOAD_RATE_LIMIT_WINDOW_SECONDS",
+      isProduction ? DEFAULT_PRODUCTION_UPLOAD_RATE_LIMIT : null,
+    ),
+    evaluateRateLimit: readRateLimit(
+      env,
+      "EVALUATE_RATE_LIMIT_MAX",
+      "EVALUATE_RATE_LIMIT_WINDOW_SECONDS",
+      isProduction ? DEFAULT_PRODUCTION_EVALUATE_RATE_LIMIT : null,
+    ),
+    retentionPollMs,
+    retentionLeaseMs,
+    retentionBaseBackoffMs,
+    retentionMaxBackoffMs,
+    retentionMaxAttempts,
     r2: readR2(env),
   };
 }
@@ -214,13 +279,18 @@ function readSignedUrlTtl(value: string | undefined): number | null {
   return parsed;
 }
 
-function readOptionalRateLimit(env: NodeJS.ProcessEnv, maxName: string, windowName: string): RateLimitRule | null {
+function readRateLimit(
+  env: NodeJS.ProcessEnv,
+  maxName: string,
+  windowName: string,
+  fallback: RateLimitRule | null,
+): RateLimitRule | null {
   const maxValue = env[maxName];
   const windowValue = env[windowName];
   const maxMissing = maxValue === undefined || maxValue.trim() === "";
   const windowMissing = windowValue === undefined || windowValue.trim() === "";
   if (maxMissing && windowMissing) {
-    return null;
+    return fallback;
   }
   if (maxMissing || windowMissing) {
     throw new Error(`${maxName} and ${windowName} must be set together`);

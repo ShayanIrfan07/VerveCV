@@ -2,7 +2,11 @@ import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./infrastructure/db/client.js";
 import { createR2Storage } from "./infrastructure/storage/r2.js";
-import { runRetentionPass } from "./modules/retention/worker.js";
+import {
+  runRetentionPass,
+  startRetentionScheduler,
+  type RetentionSchedulerHandle,
+} from "./modules/retention/worker.js";
 import { ParseGate } from "./modules/uploads/parse-gate.js";
 
 const config = loadConfig();
@@ -21,25 +25,63 @@ const parseGate =
       });
 const app = await buildApp({ config, db, storage, parseGate });
 
+let retentionScheduler: RetentionSchedulerHandle | null = null;
 if (db && storage) {
-  try {
-    await runRetentionPass({ db, storage }, { reclaimRunning: true });
-  } catch (error) {
-    app.log.error(error);
-  }
+  const logger = app.log;
   if (config.retentionPollMs !== null) {
-    const timer = setInterval(() => {
-      void runRetentionPass({ db, storage }, { reclaimRunning: false }).catch((error: unknown) => {
-        app.log.error(error);
-      });
-    }, config.retentionPollMs);
-    timer.unref();
+    retentionScheduler = startRetentionScheduler(
+      { db, storage, logger },
+      {
+        pollMs: config.retentionPollMs,
+        leaseMs: config.retentionLeaseMs,
+        baseBackoffMs: config.retentionBaseBackoffMs,
+        maxBackoffMs: config.retentionMaxBackoffMs,
+        maxAttempts: config.retentionMaxAttempts,
+      },
+    );
+    app.addHook("onClose", async () => {
+      await retentionScheduler?.stop();
+    });
+  } else {
+    try {
+      await runRetentionPass(
+        { db, storage, logger },
+        {
+          leaseMs: config.retentionLeaseMs,
+          baseBackoffMs: config.retentionBaseBackoffMs,
+          maxBackoffMs: config.retentionMaxBackoffMs,
+          maxAttempts: config.retentionMaxAttempts,
+        },
+      );
+    } catch (error) {
+      app.log.error(error);
+    }
   }
 }
+
+let shuttingDown = false;
+const shutdown = async (signal: string): Promise<void> => {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  app.log.info({ signal }, "shutting down server");
+  try {
+    await app.close();
+    process.exit(0);
+  } catch (error) {
+    app.log.error(error);
+    process.exit(1);
+  }
+};
+
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));
 
 try {
   await app.listen({ host: config.host, port: config.port });
 } catch (error) {
+  await retentionScheduler?.stop();
   app.log.error(error);
   process.exit(1);
 }

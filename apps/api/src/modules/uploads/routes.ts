@@ -123,6 +123,17 @@ export async function registerUploadRoutes(
 
       try {
         const user = await requireUser(deps.db, request);
+        if (
+          !allowRateLimit(
+            deps.rateLimiter,
+            `upload-complete:user:${user.id}`,
+            deps.config.uploadRateLimit,
+            reply,
+            request.id,
+          )
+        ) {
+          return;
+        }
         const ready = requireReady(deps);
         const params = request.params as { resumeId: string; versionId: string };
         return await completeUpload(
@@ -192,7 +203,23 @@ export async function registerUploadRoutes(
       const db = requireDb(deps.db);
       await deleteResume(db, user.id, params.resumeId);
       if (deps.storage) {
-        await runRetentionPass({ db, storage: deps.storage });
+        try {
+          await runRetentionPass(
+            { db, storage: deps.storage, logger: request.log },
+            {
+              leaseMs: deps.config.retentionLeaseMs,
+              baseBackoffMs: deps.config.retentionBaseBackoffMs,
+              maxBackoffMs: deps.config.retentionMaxBackoffMs,
+              maxAttempts: deps.config.retentionMaxAttempts,
+              maxTasks: 10,
+            },
+          );
+        } catch (retentionError) {
+          request.log.error(
+            { err: retentionError },
+            "immediate retention pass encountered an error; scheduled worker will retry",
+          );
+        }
       }
       return reply.status(204).send();
     } catch (error) {

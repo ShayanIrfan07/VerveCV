@@ -313,9 +313,9 @@ Unique on (`user_id`, `normalized_term`).
 
 ### retention_tasks
 
-`id`, `resume_version_id`, `state`, `attempts`, `next_attempt_at`, `last_error_code`, `completed_at`
+`id`, `resume_version_id`, `state`, `attempts`, `lease_owner`, `lease_until`, `next_attempt_at`, `last_error_code`, `completed_at`
 
-States: `pending`, `running`, `succeeded`, `retryable_failure`. Object deletion and row deletion are idempotent. A missing object on a retry is success for that step. Delete and expiry enqueue a task, then the in-process worker removes the stored object and derived evaluation rows. A storage failure stays `retryable_failure`. No attempt cap is stored, because ADR 0001 item A7 has not approved one.
+States: `pending`, `running`, `succeeded`, `retryable_failure`, `failed`. Object deletion and row deletion are idempotent; a missing object on retry is success for that step. Tasks are claimed with `FOR UPDATE SKIP LOCKED` and an expiring `lease_owner` / `lease_until` lease so two workers never process the same active task concurrently and crashed workers recover automatically once `lease_until` passes without requiring a process restart. Transient storage failures schedule `retryable_failure` using bounded exponential backoff with jitter up to an operational `RETENTION_MAX_ATTEMPTS` ceiling (pending ADR 0001 item A7 sign-off), after which the task transitions to `failed` and emits structured monitoring alerts. Completed purges remove the R2 object, `findings`, `evaluations`, and `evaluation_jobs`, and scrub filenames and hashes from `resumes` and `resume_versions`.
 
 ## 8. Upload and verification sequence
 

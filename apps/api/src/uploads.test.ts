@@ -195,9 +195,8 @@ describe("resume upload", () => {
       .select()
       .from(schema.auditEvents)
       .where(eq(schema.auditEvents.eventType, "resume_delete_requested"));
-    expect(deleteAudits[0]?.safeMetadata).toMatchObject({
+    expect(deleteAudits[0]?.safeMetadata).toEqual({
       versionCount: 1,
-      physicalDeletionComplete: false,
     });
 
     await app.close();
@@ -686,7 +685,11 @@ describe("resume upload", () => {
         await storage.delete(key);
       },
     };
-    await runRetentionPass({ db: pgliteDb as unknown as Database, storage: flaky });
+    const t0 = new Date("2026-11-16T10:00:00.000Z");
+    await runRetentionPass(
+      { db: pgliteDb as unknown as Database, storage: flaky },
+      { now: t0, baseBackoffMs: 1_000, maxBackoffMs: 10_000, random: () => 0.5 },
+    );
     expect(storage.has(objectKey)).toBe(true);
     const failed = await pgliteDb
       .select()
@@ -694,8 +697,12 @@ describe("resume upload", () => {
       .where(eq(schema.retentionTasks.resumeVersionId, created.versionId));
     expect(failed[0]?.state).toBe("retryable_failure");
     expect(failed[0]?.lastErrorCode).toBe("STORAGE_DELETE_FAILED");
+    expect(failed[0]?.nextAttemptAt.getTime()).toBeGreaterThan(t0.getTime());
     failDelete = false;
-    await runRetentionPass({ db: pgliteDb as unknown as Database, storage });
+    await runRetentionPass(
+      { db: pgliteDb as unknown as Database, storage },
+      { now: new Date(t0.getTime() + 15_000) },
+    );
     expect(storage.has(objectKey)).toBe(false);
     const purged = await pgliteDb
       .select()
