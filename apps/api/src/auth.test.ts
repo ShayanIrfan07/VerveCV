@@ -76,6 +76,11 @@ describe("database migrations", () => {
     );
     expect(fpCols.rows).toHaveLength(1);
 
+    const leaseCols = await client.query<{ column_name: string }>(
+      "select column_name from information_schema.columns where table_name = 'retention_tasks' and column_name in ('lease_owner', 'lease_until') order by column_name",
+    );
+    expect(leaseCols.rows.map((row) => row.column_name)).toEqual(["lease_owner", "lease_until"]);
+
     await migrate(pgliteDb, { migrationsFolder: path.resolve("database/migrations") });
     await client.close();
   });

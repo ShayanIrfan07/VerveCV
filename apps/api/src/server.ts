@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { createDatabase } from "./infrastructure/db/client.js";
 import { createR2Storage } from "./infrastructure/storage/r2.js";
 import { ParseGate } from "./modules/uploads/parse-gate.js";
+import { attachRetentionRuntime } from "./retention-runtime.js";
 
 const config = loadConfig();
 if (!config.cookieSecret || config.cookieSecret.length < 32) {
@@ -19,10 +20,31 @@ const parseGate =
         maxWaitMs: config.parseQueueTimeoutMs,
       });
 const app = await buildApp({ config, db, storage, parseGate });
+const retentionRuntime = await attachRetentionRuntime(app, { config, db, storage });
+
+let shuttingDown = false;
+const shutdown = async (signal: string): Promise<void> => {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  app.log.info({ signal }, "shutting down server");
+  try {
+    await app.close();
+    process.exit(0);
+  } catch (error) {
+    app.log.error(error);
+    process.exit(1);
+  }
+};
+
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));
 
 try {
   await app.listen({ host: config.host, port: config.port });
 } catch (error) {
+  await retentionRuntime.scheduler?.stop();
   app.log.error(error);
   process.exit(1);
 }

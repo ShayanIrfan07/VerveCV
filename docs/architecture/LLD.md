@@ -221,7 +221,7 @@ Error body, used for every error response:
 | GET | `/resumes` | List the caller’s resumes (paginated via `limit` and `offset`) |
 | GET | `/resumes/:id` | One resume, owned by the caller |
 | GET | `/resumes/:id/versions/:versionId/view-url` | Short-lived download URL |
-| DELETE | `/resumes/:id` | Soft-delete resume and enqueue `retention_tasks` (physical R2 deletion runs in Phase 7 worker) |
+| DELETE | `/resumes/:id` | Revoke access, enqueue `retention_tasks`, and delete the stored object plus derived evaluation rows |
 | POST | `/evaluations` | Queue an authoritative evaluation |
 | GET | `/evaluations/:id` | Score, findings, status |
 | GET | `/evaluation-jobs/:id` | Job status |
@@ -313,9 +313,9 @@ Unique on (`user_id`, `normalized_term`).
 
 ### retention_tasks
 
-`id`, `resume_version_id`, `state`, `attempts`, `next_attempt_at`, `last_error_code`, `completed_at`
+`id`, `resume_version_id`, `state`, `attempts`, `lease_owner`, `lease_until`, `next_attempt_at`, `last_error_code`, `completed_at`
 
-States: `pending`, `running`, `succeeded`, `retryable_failure`. Object deletion and row deletion are idempotent. A missing object on a retry is success for that step. Note: Phase 3 (`feature/resume-upload-and-parsing`) enqueues `pending` retention tasks and blocks access via `deleted_at` / `deletion_state = "delete_requested"`, while the background worker that executes physical R2 and derived-data deletion is a release-blocking dependency delivered in Phase 7 (`feature/retention-and-hardening`).
+States: `pending`, `running`, `succeeded`, `retryable_failure`, `failed`. Object deletion and row deletion are idempotent; a missing object on retry is success for that step. Tasks are claimed with `FOR UPDATE SKIP LOCKED` and an expiring `lease_owner` / `lease_until` lease, renewed via heartbeat while an `AbortSignal`-bounded R2 `DELETE` is in flight, and fenced on `(lease_owner, attempts)` so a stale worker can never overwrite a reclaimed task. If the API process is stopped or suspended on a sleeping free-tier instance, background sweeps pause until the process starts or wakes up, at which point the startup pass immediately catches up on overdue `expires_at` rows and expired leases. Transient storage failures schedule `retryable_failure` using bounded exponential backoff with jitter up to `RETENTION_MAX_ATTEMPTS` (pending ADR 0001 item A7 sign-off), after which the task transitions to `failed`, logs `retention.permanent_failure` / `retention.dead_letter_backlog` alerts, and awaits operator recovery via `requeueFailedRetentionTasks` (`pnpm --filter @vervecv/api retention:requeue`). Completed purges remove the R2 object, `findings`, `evaluations`, and `evaluation_jobs`, replace `object_key` with `purged_<versionId>`, and scrub filenames and hashes from `resumes` and `resume_versions`.
 
 ## 8. Upload and verification sequence
 

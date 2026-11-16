@@ -225,14 +225,23 @@ export const auditEvents = pgTable("audit_events", {
   createdAt: timestamps.createdAt,
 });
 
-export const retentionTasks = pgTable("retention_tasks", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  resumeVersionId: uuid("resume_version_id")
-    .notNull()
-    .references(() => resumeVersions.id, { onDelete: "cascade" }),
-  state: text("state").notNull(),
-  attempts: integer("attempts").notNull().default(0),
-  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull(),
-  lastErrorCode: text("last_error_code"),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
-});
+export const retentionTasks = pgTable(
+  "retention_tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    resumeVersionId: uuid("resume_version_id")
+      .notNull()
+      .references(() => resumeVersions.id, { onDelete: "cascade" }),
+    state: text("state").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    leaseOwner: text("lease_owner"),
+    leaseUntil: timestamp("lease_until", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull(),
+    lastErrorCode: text("last_error_code"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("retention_tasks_state_schedule_idx").on(table.state, table.nextAttemptAt),
+    index("retention_tasks_state_lease_idx").on(table.state, table.leaseUntil),
+  ],
+);

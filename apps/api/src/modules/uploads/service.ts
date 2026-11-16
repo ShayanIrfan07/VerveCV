@@ -260,11 +260,15 @@ async function cleanupSingleAbandonedVersion(
       return true;
     }
 
-    // Storage delete failed transiently: transition out of pending and enqueue a
-    // retention task for Phase 7's retryable deletion worker so no R2 object is leaked.
+    // Storage delete failed transiently: transition out of pending, scrub filenames, and enqueue a
+    // retention task for the retryable deletion worker so no R2 object or personal filename is leaked.
     await tx
       .update(resumeVersions)
-      .set({ verificationState: "rejected", deletionState: "delete_requested" })
+      .set({
+        verificationState: "rejected",
+        deletionState: "delete_requested",
+        originalFilename: "deleted",
+      })
       .where(eq(resumeVersions.id, stale.versionId));
     await tx.insert(retentionTasks).values({
       resumeVersionId: stale.versionId,
@@ -283,8 +287,13 @@ async function cleanupSingleAbandonedVersion(
     if (Number(activeSiblings[0]?.total ?? 0) === 0) {
       await tx
         .update(resumes)
-        .set({ deletedAt: now, updatedAt: now })
-        .where(and(eq(resumes.id, stale.resumeId), isNull(resumes.deletedAt)));
+        .set({
+          deletedAt: now,
+          updatedAt: now,
+          title: "deleted",
+          candidateType: null,
+        })
+        .where(eq(resumes.id, stale.resumeId));
     }
     return true;
   });
@@ -634,77 +643,119 @@ export async function createViewUrl(
 }
 
 /**
- * Logical soft-deletion + retention task enqueue.
- *
- * IMPORTANT (Phase 3 boundary / release-blocking dependency for Phase 7):
- * This operation immediately revokes read, download-URL, and verification access by marking
- * `resumes.deleted_at` and `resume_versions.deletion_state = "delete_requested"`, and records
- * `retention_tasks` (`state = "pending"`). Physical deletion of R2 objects, 90-day expiry sweeps,
- * and derived evaluation/finding purges are NOT yet executed in Phase 3; they are a release-blocking
- * dependency assigned to Phase 7 (`feature/retention-and-hardening`).
+ * Revokes access, scrubs original filename/title metadata, and enqueues `retention_tasks`
+ * idempotently. Repeated calls by the owner return cleanly without duplicating tasks or
+ * audit events, while cross-user and unknown resume IDs return 404.
  */
 export async function deleteResume(db: Database, userId: string, resumeId: string) {
   const now = new Date();
   await db.transaction(async (tx) => {
     const resumeRows = await tx
-      .select({ id: resumes.id })
+      .select({ id: resumes.id, deletedAt: resumes.deletedAt })
       .from(resumes)
-      .where(and(eq(resumes.id, resumeId), eq(resumes.userId, userId), isNull(resumes.deletedAt)))
+      .where(and(eq(resumes.id, resumeId), eq(resumes.userId, userId)))
       .for("update")
       .limit(1);
-    if (resumeRows.length === 0) {
+    const resume = resumeRows[0];
+    if (!resume) {
       throw new UploadError(404, "NOT_FOUND", "Not found");
     }
 
     const versionRows = await tx
-      .select({ id: resumeVersions.id })
+      .select({
+        id: resumeVersions.id,
+        deletionState: resumeVersions.deletionState,
+      })
       .from(resumeVersions)
       .where(eq(resumeVersions.resumeId, resumeId))
       .for("update");
-    const versionIds = versionRows.map((row) => row.id);
+
+    const unpurgedIds = versionRows
+      .filter((row) => row.deletionState !== "deleted")
+      .map((row) => row.id);
 
     await tx
       .update(resumes)
-      .set({ deletedAt: now, updatedAt: now })
+      .set({
+        deletedAt: resume.deletedAt ?? now,
+        updatedAt: now,
+        title: "deleted",
+        candidateType: null,
+      })
       .where(eq(resumes.id, resumeId));
 
-    if (versionIds.length > 0) {
+    if (unpurgedIds.length > 0) {
       await tx
         .update(resumeVersions)
-        .set({ deletionState: "delete_requested" })
-        .where(inArray(resumeVersions.id, versionIds));
+        .set({
+          deletionState: "delete_requested",
+          originalFilename: "deleted",
+        })
+        .where(inArray(resumeVersions.id, unpurgedIds));
 
       const existingTasks = await tx
-        .select({ resumeVersionId: retentionTasks.resumeVersionId })
+        .select({
+          id: retentionTasks.id,
+          resumeVersionId: retentionTasks.resumeVersionId,
+          state: retentionTasks.state,
+        })
         .from(retentionTasks)
-        .where(
-          and(
-            inArray(retentionTasks.resumeVersionId, versionIds),
-            inArray(retentionTasks.state, ["pending", "running"]),
-          ),
-        );
-      const alreadyQueued = new Set(existingTasks.map((task) => task.resumeVersionId));
+        .where(inArray(retentionTasks.resumeVersionId, unpurgedIds))
+        .for("update");
 
-      for (const versionId of versionIds) {
-        if (!alreadyQueued.has(versionId)) {
-          await tx.insert(retentionTasks).values({
-            resumeVersionId: versionId,
-            state: "pending",
-            nextAttemptAt: now,
-          });
+      const openVersionIds = new Set(
+        existingTasks
+          .filter((task) =>
+            task.state === "pending" ||
+            task.state === "running" ||
+            task.state === "retryable_failure",
+          )
+          .map((task) => task.resumeVersionId),
+      );
+      const failedTaskByVersion = new Map(
+        existingTasks
+          .filter((task) => task.state === "failed")
+          .map((task) => [task.resumeVersionId, task.id]),
+      );
+
+      for (const versionId of unpurgedIds) {
+        if (openVersionIds.has(versionId)) {
+          continue;
         }
+        const previouslyFailedTaskId = failedTaskByVersion.get(versionId);
+        if (previouslyFailedTaskId) {
+          await tx
+            .update(retentionTasks)
+            .set({
+              state: "pending",
+              attempts: 0,
+              leaseOwner: null,
+              leaseUntil: null,
+              nextAttemptAt: now,
+              lastErrorCode: null,
+            })
+            .where(eq(retentionTasks.id, previouslyFailedTaskId));
+          continue;
+        }
+        await tx.insert(retentionTasks).values({
+          resumeVersionId: versionId,
+          state: "pending",
+          attempts: 0,
+          nextAttemptAt: now,
+        });
       }
     }
 
-    await tx.insert(auditEvents).values({
-      userId,
-      eventType: "resume_delete_requested",
-      targetId: resumeId,
-      safeMetadata: {
-        versionCount: versionIds.length,
-        physicalDeletionComplete: false,
-      },
-    });
+    if (resume.deletedAt === null) {
+      await tx.insert(auditEvents).values({
+        userId,
+        eventType: "resume_delete_requested",
+        targetId: resumeId,
+        safeMetadata: {
+          versionCount: versionRows.length,
+        },
+      });
+    }
   });
 }
 

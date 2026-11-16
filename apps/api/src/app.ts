@@ -7,7 +7,7 @@ import type { AppConfig } from "./config.js";
 import { errorBody } from "./http.js";
 import type { Database } from "./infrastructure/db/client.js";
 import type { ObjectStorage } from "./infrastructure/storage/memory.js";
-import type { SlidingWindowRateLimiter } from "./modules/auth/rate-limit.js";
+import { SlidingWindowRateLimiter } from "./modules/auth/rate-limit.js";
 import { registerAuthRoutes } from "./modules/auth/routes.js";
 import { registerEvaluationRoutes } from "./modules/evaluations/routes.js";
 import type { ParseGate } from "./modules/uploads/parse-gate.js";
@@ -68,6 +68,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     reply.header("referrer-policy", "no-referrer");
     reply.header("x-content-type-options", "nosniff");
     reply.header("x-frame-options", "DENY");
+    reply.header("content-security-policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     const origin = request.headers.origin;
     if (typeof origin === "string" && config.allowedOrigins.includes(origin)) {
       reply.header("access-control-allow-origin", origin);
@@ -122,18 +123,21 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     return { status: "ready" };
   });
 
-  await registerAuthRoutes(app, deps);
+  const rateLimiter = deps.rateLimiter ?? new SlidingWindowRateLimiter();
+  await registerAuthRoutes(app, { ...deps, rateLimiter });
   await registerUploadRoutes(app, {
     config,
     db: deps.db,
     storage: deps.storage ?? null,
     parseGate: deps.parseGate ?? null,
+    rateLimiter,
   });
   await registerEvaluationRoutes(app, {
     config,
     db: deps.db,
     storage: deps.storage ?? null,
     parseGate: deps.parseGate ?? null,
+    rateLimiter,
   });
   return app;
 }
