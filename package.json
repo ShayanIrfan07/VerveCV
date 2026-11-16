@@ -17,8 +17,9 @@
     "size:check": "node scripts/check-size.mjs"
   },
   "devDependencies": {
-    "@types/node": "^24.10.1",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.65.0",
+    "@types/node": "^24.10.1",
     "eslint": "^10.14.0",
     "eslint-plugin-react-hooks": "^7.0.1",
     "typescript": "~5.9.3",
@@ -26,6 +27,8 @@
     "vitest": "^4.0.8"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }
