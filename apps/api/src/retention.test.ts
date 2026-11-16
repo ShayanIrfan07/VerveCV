@@ -14,6 +14,7 @@ import {
   computeRetentionBackoffMs,
   getRetentionBacklogSummary,
   PURGED_OBJECT_KEY_PREFIX,
+  renewTaskLease,
   requeueFailedRetentionTasks,
   runRetentionPass,
   startRetentionScheduler,
@@ -918,14 +919,51 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     }
     expect(errorLogs.some((e) => e["event"] === "retention.dead_letter_backlog")).toBe(true);
 
-    // CLI argument parser validation
+    // CLI argument parser validation: targeted --task-id works directly, bulk requires --all or --dry-run
     const failedTask = (await pgliteDb.select().from(schema.retentionTasks))[0]!;
     expect(parseRequeueCliArgs(["--task-id", failedTask.id, "--limit", "10", "--no-run"])).toEqual({
       taskIds: [failedTask.id],
+      all: false,
+      dryRun: false,
       limit: 10,
       runPassNow: false,
     });
+    expect(parseRequeueCliArgs(["--all", "--limit", "25"])).toEqual({
+      taskIds: undefined,
+      all: true,
+      dryRun: false,
+      limit: 25,
+      runPassNow: true,
+    });
+    expect(parseRequeueCliArgs(["--dry-run"])).toEqual({
+      taskIds: undefined,
+      all: false,
+      dryRun: true,
+      limit: 100,
+      runPassNow: false,
+    });
+    expect(() => parseRequeueCliArgs([])).toThrow(/--all|--dry-run|--task-id/);
+    expect(() => parseRequeueCliArgs(["--all", "--task-id", failedTask.id])).toThrow(/cannot be combined/);
     expect(() => parseRequeueCliArgs(["--task-id", "not-a-uuid"])).toThrow(/UUID/);
+
+    // Dry-run previews matching failed tasks without mutating DB state or writing audit events
+    const dryRunPreview = await requeueFailedRetentionTasks(db, {
+      dryRun: true,
+      now: new Date(t0.getTime() + 4_000),
+      logger,
+    });
+    expect(dryRunPreview).toEqual({
+      dryRun: true,
+      requeuedCount: 1,
+      taskIds: [failedTask.id],
+    });
+    expect((await getRetentionBacklogSummary(db)).permanentlyFailed).toBe(1);
+    expect(
+      await pgliteDb
+        .select()
+        .from(schema.auditEvents)
+        .where(eq(schema.auditEvents.eventType, "retention_task_requeued")),
+    ).toHaveLength(0);
 
     // Operator runs requeueFailedRetentionTasks after fixing R2 credentials -> resets attempts to 0 and state to pending
     const requeued = await requeueFailedRetentionTasks(db, {
@@ -934,6 +972,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
       logger,
     });
     expect(requeued).toEqual({
+      dryRun: false,
       requeuedCount: 1,
       taskIds: [failedTask.id],
     });
@@ -1049,6 +1088,291 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     await scheduler.stop();
     expect(memoryStorage.has(uploaded.objectKey)).toBe(false);
     expect(infoSpy).toHaveBeenCalled();
+
+    await app.close();
+    await client.close();
+  });
+
+  it("sweeps >100 expired versions across multiple batches even when first-batch versions already have retention tasks", async () => {
+    const { app, client, db, pgliteDb, memoryStorage } = await createRetentionTestApp();
+    const { userId } = await registerAndSignIn(app, "batch135@example.com");
+
+    const now = new Date("2026-11-16T20:00:00.000Z");
+    const expiredAt = new Date("2026-11-01T00:00:00.000Z");
+    const totalExpired = 135;
+    const preQueuedCount = 25;
+
+    const insertedResume = await pgliteDb
+      .insert(schema.resumes)
+      .values({ userId, title: "Batch_Test_Resume.pdf" })
+      .returning({ id: schema.resumes.id });
+    const resumeId = insertedResume[0]!.id;
+
+    const versionValues = Array.from({ length: totalExpired }, (_, idx) => {
+      const objectKey = `obj_batch_${idx + 1}`;
+      return {
+        resumeId,
+        versionNumber: idx + 1,
+        originalFilename: `Batch_${idx + 1}.pdf`,
+        mimeType: PDF_MIME,
+        sizeBytes: 64,
+        sha256: "batchhash",
+        objectKey,
+        verificationState: "verified",
+        // Ascending expiry so the first 100 batch deterministically includes the 25 pre-queued versions!
+        expiresAt: new Date(expiredAt.getTime() + idx * 1_000),
+        deletionState: "active",
+      };
+    });
+
+    const createdVersions = await pgliteDb
+      .insert(schema.resumeVersions)
+      .values(versionValues)
+      .returning({ id: schema.resumeVersions.id, objectKey: schema.resumeVersions.objectKey });
+
+    for (const v of createdVersions) {
+      await memoryStorage.put(v.objectKey, new Uint8Array([1, 2, 3]));
+    }
+
+    // Pre-insert open retention_tasks on the first 25 versions (plus 5 failed tasks to verify safe reset)
+    await pgliteDb.insert(schema.retentionTasks).values([
+      ...createdVersions.slice(0, 20).map((v) => ({
+        resumeVersionId: v.id,
+        state: "pending",
+        attempts: 0,
+        nextAttemptAt: now,
+      })),
+      ...createdVersions.slice(20, preQueuedCount).map((v) => ({
+        resumeVersionId: v.id,
+        state: "failed",
+        attempts: 8,
+        nextAttemptAt: expiredAt,
+        lastErrorCode: "STORAGE_DELETE_FAILED",
+      })),
+    ]);
+
+    // In batch 1 (100 candidates): only 80 tasks are newly inserted/requeued (< 100!),
+    // yet enqueueExpiredVersions MUST still continue to batch 2 for the remaining 35 expired versions!
+    const result = await runRetentionPass({ db, storage: memoryStorage }, { now });
+    expect(result).toMatchObject({
+      expiredEnqueued: totalExpired - 20, // 110 newly inserted + 5 failed reset; 20 already open preserved
+      processed: totalExpired,
+      succeeded: totalExpired,
+      permanentlyFailed: 0,
+    });
+
+    // Idempotent second pass does nothing and creates zero duplicate tasks
+    const secondPass = await runRetentionPass({ db, storage: memoryStorage }, { now });
+    expect(secondPass).toMatchObject({
+      expiredEnqueued: 0,
+      processed: 0,
+      succeeded: 0,
+    });
+
+    const allTasks = await pgliteDb.select().from(schema.retentionTasks);
+    expect(allTasks).toHaveLength(totalExpired);
+    expect(allTasks.every((t) => t.state === "succeeded")).toBe(true);
+
+    for (const v of createdVersions) {
+      expect(memoryStorage.has(v.objectKey)).toBe(false);
+    }
+
+    await app.close();
+    await client.close();
+  });
+
+  it("refuses to renew an already-expired lease on delayed heartbeat, aborts Worker A, and lets Worker B reclaim safely", async () => {
+    const { app, client, db, pgliteDb, memoryStorage } = await createRetentionTestApp();
+    const { cookie, userId } = await registerAndSignIn(app, "expired-heartbeat@example.com");
+    const uploaded = await uploadAndVerifyPdf(app, memoryStorage, cookie, "DelayedHeartbeat.pdf");
+    await deleteResume(db, userId, uploaded.resumeId);
+
+    // Direct unit check on renewTaskLease: refuses renewal when now >= lease_until
+    const seededTask = (await pgliteDb.select().from(schema.retentionTasks))[0]!;
+    const claimTime = new Date("2026-11-16T21:00:00.000Z");
+    const initialLeaseUntil = new Date(claimTime.getTime() + 1_000);
+    await pgliteDb
+      .update(schema.retentionTasks)
+      .set({
+        state: "running",
+        attempts: 1,
+        leaseOwner: "worker-stalled",
+        leaseUntil: initialLeaseUntil,
+      })
+      .where(eq(schema.retentionTasks.id, seededTask.id));
+
+    // At exact expiry or after expiry, renewTaskLease MUST return false and leave leaseUntil untouched
+    const exactExpiryRenew = await renewTaskLease(
+      db,
+      { id: seededTask.id, attempts: 1 },
+      "worker-stalled",
+      initialLeaseUntil,
+      new Date(initialLeaseUntil.getTime() + 60_000),
+    );
+    expect(exactExpiryRenew).toBe(false);
+
+    const lateRenew = await renewTaskLease(
+      db,
+      { id: seededTask.id, attempts: 1 },
+      "worker-stalled",
+      new Date(initialLeaseUntil.getTime() + 500),
+      new Date(initialLeaseUntil.getTime() + 60_000),
+    );
+    expect(lateRenew).toBe(false);
+
+    // Reset task back to pending for end-to-end delayed-heartbeat + competing-worker reclaim test
+    await pgliteDb
+      .update(schema.retentionTasks)
+      .set({ state: "pending", attempts: 0, leaseOwner: null, leaseUntil: null })
+      .where(eq(schema.retentionTasks.id, seededTask.id));
+
+    // Simulate an event-loop stall in Worker A: Worker A claims at t=0 with leaseMs=40ms,
+    // its clock jumps past lease expiry BEFORE its 15ms heartbeat fires, so the delayed heartbeat
+    // sees `lease_until <= now`, refuses self-renewal, aborts Worker A's storage delete,
+    // and Worker B cleanly reclaims and completes the task.
+    let workerAClockMs = Date.parse("2026-11-16T21:05:00.000Z");
+    let workerAAborted = false;
+
+    const stalledHeartbeatStorage: ObjectStorage = {
+      createUploadUrl: (input) => memoryStorage.createUploadUrl(input),
+      createDownloadUrl: (input) => memoryStorage.createDownloadUrl(input),
+      get: (key, opts) => memoryStorage.get(key, opts),
+      delete: (_key, options) =>
+        new Promise<void>((_resolve, reject) => {
+          // Immediately jump Worker A's clock past its 40ms lease BEFORE the first 15ms heartbeat fires!
+          workerAClockMs += 100;
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              workerAAborted = true;
+              reject(new Error("aborted after expired lease heartbeat"));
+            },
+            { once: true },
+          );
+        }),
+    };
+
+    const workerAResult = await runRetentionPass(
+      { db, storage: stalledHeartbeatStorage },
+      {
+        clock: () => new Date(workerAClockMs),
+        workerId: "worker-a-delayed-hb",
+        leaseMs: 40,
+        leaseRenewIntervalMs: 15,
+        storageDeleteTimeoutMs: 2_000,
+      },
+    );
+
+    expect(workerAAborted).toBe(true);
+    // Worker A exited as fenced (did not succeed, did not overwrite retry state)
+    expect(workerAResult.succeeded).toBe(0);
+    expect(workerAResult.retried).toBe(0);
+
+    // Task still has its expired lease from Worker A -> Worker B immediately reclaims and purges!
+    const workerBResult = await runRetentionPass(
+      { db, storage: memoryStorage },
+      {
+        now: new Date(workerAClockMs + 10),
+        workerId: "worker-b-reclaimer",
+        leaseMs: 60_000,
+      },
+    );
+    expect(workerBResult).toMatchObject({
+      workerId: "worker-b-reclaimer",
+      processed: 1,
+      succeeded: 1,
+    });
+    expect(memoryStorage.has(uploaded.objectKey)).toBe(false);
+
+    await app.close();
+    await client.close();
+  });
+
+  it("handles retry safely when R2 completes deletion on the server side after a client-side timeout", async () => {
+    const { app, client, db, pgliteDb, memoryStorage } = await createRetentionTestApp();
+    const { cookie, userId } = await registerAndSignIn(app, "late-r2-complete@example.com");
+    const uploaded = await uploadAndVerifyPdf(app, memoryStorage, cookie, "TimeoutYetDeleted.pdf");
+    await deleteResume(db, userId, uploaded.resumeId);
+
+    const backgroundDeleteDone = deferred();
+    let deleteInvocations = 0;
+
+    // Attempt 1: R2 receives the DELETE and removes the object on its backend,
+    // but the HTTP response stalls past the client's 25ms timeout.
+    // Attempt 2: R2 no longer has the object (404 / no-op delete) -> idempotent success!
+    const r2CompletesAfterTimeoutStorage: ObjectStorage = {
+      createUploadUrl: (input) => memoryStorage.createUploadUrl(input),
+      createDownloadUrl: (input) => memoryStorage.createDownloadUrl(input),
+      get: (key, opts) => memoryStorage.get(key, opts),
+      delete: async (key, options) => {
+        deleteInvocations += 1;
+        if (deleteInvocations === 1) {
+          // Simulate R2 deleting the object server-side just after client aborts on timeout
+          setTimeout(() => {
+            void memoryStorage.delete(key).then(() => backgroundDeleteDone.resolve());
+          }, 40);
+          return new Promise<void>((_resolve, reject) => {
+            options?.signal?.addEventListener(
+              "abort",
+              () => reject(new Error("client aborted on timeout")),
+              { once: true },
+            );
+          });
+        }
+        // Subsequent retry sees the object already absent in storage (idempotent 404 success)
+        expect(memoryStorage.has(key)).toBe(false);
+        await memoryStorage.delete(key, options);
+      },
+    };
+
+    const t0 = new Date("2026-11-16T22:00:00.000Z");
+    const pass1 = await runRetentionPass(
+      { db, storage: r2CompletesAfterTimeoutStorage },
+      {
+        now: t0,
+        leaseMs: 200,
+        storageDeleteTimeoutMs: 25,
+        leaseRenewIntervalMs: null,
+        baseBackoffMs: 500,
+        maxBackoffMs: 2_000,
+      },
+    );
+    expect(pass1).toMatchObject({ processed: 1, retried: 1, succeeded: 0 });
+
+    const midTask = (await pgliteDb.select().from(schema.retentionTasks))[0];
+    expect(midTask?.state).toBe("retryable_failure");
+    expect(midTask?.lastErrorCode).toBe("STORAGE_DELETE_TIMEOUT");
+
+    // Wait for the server-side R2 deletion to finish behind the scenes
+    await backgroundDeleteDone.promise;
+    expect(memoryStorage.has(uploaded.objectKey)).toBe(false);
+
+    // Retry pass after backoff window: storage.delete() treats missing object as idempotent success,
+    // purges DB metadata/evaluations, scrubs object_key, and writes exactly one purge audit event.
+    const pass2 = await runRetentionPass(
+      { db, storage: r2CompletesAfterTimeoutStorage },
+      {
+        now: new Date(t0.getTime() + 5_000),
+        leaseMs: 60_000,
+      },
+    );
+    expect(pass2).toMatchObject({ processed: 1, succeeded: 1, retried: 0, permanentlyFailed: 0 });
+    expect(deleteInvocations).toBe(2);
+
+    const finalTask = (await pgliteDb.select().from(schema.retentionTasks))[0];
+    expect(finalTask).toMatchObject({
+      state: "succeeded",
+      attempts: 2,
+      lastErrorCode: null,
+      leaseOwner: null,
+      leaseUntil: null,
+    });
+
+    const purgeAudits = await pgliteDb
+      .select()
+      .from(schema.auditEvents)
+      .where(eq(schema.auditEvents.eventType, "resume_version_purged"));
+    expect(purgeAudits).toHaveLength(1);
 
     await app.close();
     await client.close();

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, count, eq, inArray, isNull, lte, notInArray, or } from "drizzle-orm";
+import { and, asc, count, eq, gt, inArray, isNull, lte, notInArray, or } from "drizzle-orm";
 import type { Database } from "../../infrastructure/db/client.js";
 import {
   auditEvents,
@@ -59,6 +59,7 @@ export interface RetentionDeps {
 
 export interface RetentionPassOptions {
   now?: Date;
+  clock?: () => Date;
   workerId?: string;
   leaseMs?: number;
   storageDeleteTimeoutMs?: number;
@@ -91,10 +92,12 @@ export interface RequeueFailedTasksOptions {
   taskIds?: readonly string[];
   limit?: number;
   now?: Date;
+  dryRun?: boolean;
   logger?: RetentionLogger;
 }
 
 export interface RequeueFailedTasksResult {
+  dryRun: boolean;
   requeuedCount: number;
   taskIds: string[];
 }
@@ -184,17 +187,32 @@ export async function requeueFailedRetentionTasks(
 ): Promise<RequeueFailedTasksResult> {
   const now = options.now ?? new Date();
   const limit = options.limit ?? 100;
+  const dryRun = options.dryRun === true;
   if (!Number.isInteger(limit) || limit < 1) {
     throw new Error("limit must be a positive integer");
   }
   if (options.taskIds !== undefined && options.taskIds.length === 0) {
-    return { requeuedCount: 0, taskIds: [] };
+    return { dryRun, requeuedCount: 0, taskIds: [] };
   }
 
   const requeued = await db.transaction(async (tx) => {
     const conditions = [eq(retentionTasks.state, "failed")];
     if (options.taskIds !== undefined) {
       conditions.push(inArray(retentionTasks.id, [...options.taskIds]));
+    }
+
+    if (dryRun) {
+      return tx
+        .select({
+          id: retentionTasks.id,
+          resumeVersionId: retentionTasks.resumeVersionId,
+          previousAttempts: retentionTasks.attempts,
+          previousErrorCode: retentionTasks.lastErrorCode,
+        })
+        .from(retentionTasks)
+        .where(and(...conditions))
+        .orderBy(asc(retentionTasks.nextAttemptAt), asc(retentionTasks.id))
+        .limit(limit);
     }
 
     const targets = await tx
@@ -242,7 +260,7 @@ export async function requeueFailedRetentionTasks(
     return targets;
   });
 
-  if (requeued.length > 0) {
+  if (requeued.length > 0 && !dryRun) {
     options.logger?.info?.(
       {
         event: "retention.tasks_requeued",
@@ -253,6 +271,7 @@ export async function requeueFailedRetentionTasks(
   }
 
   return {
+    dryRun,
     requeuedCount: requeued.length,
     taskIds: requeued.map((row) => row.id),
   };
@@ -300,7 +319,7 @@ export async function runRetentionPass(
     throw new Error("maxTasks must be a positive integer");
   }
 
-  const currentNow = (): Date => options.now ?? new Date();
+  const currentNow = (): Date => (options.clock ? options.clock() : (options.now ?? new Date()));
   const expiredEnqueued = await enqueueExpiredVersions(deps.db, currentNow());
 
   const seen = new Set<string>();
@@ -470,16 +489,17 @@ async function enqueueExpiredVersions(db: Database, now: Date): Promise<number> 
   let totalEnqueued = 0;
 
   for (;;) {
-    const batchCount = await db.transaction(async (tx) => {
+    const batch = await db.transaction(async (tx) => {
       const candidates = await tx
         .select({ id: resumeVersions.id, resumeId: resumeVersions.resumeId })
         .from(resumeVersions)
         .where(and(eq(resumeVersions.deletionState, "active"), lte(resumeVersions.expiresAt, now)))
+        .orderBy(asc(resumeVersions.expiresAt), asc(resumeVersions.id))
         .limit(EXPIRED_BATCH_SIZE)
         .for("update", { skipLocked: true });
 
       if (candidates.length === 0) {
-        return 0;
+        return { selectedCount: 0, insertedCount: 0 };
       }
 
       const candidateIds = candidates.map((row) => row.id);
@@ -498,32 +518,61 @@ async function enqueueExpiredVersions(db: Database, now: Date): Promise<number> 
         .returning({ id: resumeVersions.id, resumeId: resumeVersions.resumeId });
 
       if (transitioned.length === 0) {
-        return 0;
+        return { selectedCount: candidates.length, insertedCount: 0 };
       }
 
       const transitionedIds = transitioned.map((row) => row.id);
-      const open = await tx
-        .select({ resumeVersionId: retentionTasks.resumeVersionId })
+      const existingTasks = await tx
+        .select({
+          id: retentionTasks.id,
+          resumeVersionId: retentionTasks.resumeVersionId,
+          state: retentionTasks.state,
+        })
         .from(retentionTasks)
-        .where(
-          and(
-            inArray(retentionTasks.resumeVersionId, transitionedIds),
-            inArray(retentionTasks.state, [...OPEN_TASK_STATES]),
-          ),
-        );
-      const queued = new Set(open.map((row) => row.resumeVersionId));
+        .where(inArray(retentionTasks.resumeVersionId, transitionedIds))
+        .for("update");
+
+      const openVersionIds = new Set(
+        existingTasks
+          .filter((row) =>
+            OPEN_TASK_STATES.includes(row.state as (typeof OPEN_TASK_STATES)[number]),
+          )
+          .map((row) => row.resumeVersionId),
+      );
+      const failedTaskByVersion = new Map(
+        existingTasks
+          .filter((row) => row.state === "failed")
+          .map((row) => [row.resumeVersionId, row.id]),
+      );
 
       let insertedCount = 0;
       for (const versionId of transitionedIds) {
-        if (!queued.has(versionId)) {
-          await tx.insert(retentionTasks).values({
-            resumeVersionId: versionId,
-            state: "pending",
-            attempts: 0,
-            nextAttemptAt: now,
-          });
-          insertedCount += 1;
+        if (openVersionIds.has(versionId)) {
+          continue;
         }
+        const failedTaskId = failedTaskByVersion.get(versionId);
+        if (failedTaskId !== undefined) {
+          await tx
+            .update(retentionTasks)
+            .set({
+              state: "pending",
+              attempts: 0,
+              leaseOwner: null,
+              leaseUntil: null,
+              nextAttemptAt: now,
+              lastErrorCode: null,
+            })
+            .where(eq(retentionTasks.id, failedTaskId));
+          insertedCount += 1;
+          continue;
+        }
+        await tx.insert(retentionTasks).values({
+          resumeVersionId: versionId,
+          state: "pending",
+          attempts: 0,
+          nextAttemptAt: now,
+        });
+        insertedCount += 1;
       }
 
       const resumeIds = [...new Set(transitioned.map((row) => row.resumeId))];
@@ -558,11 +607,11 @@ async function enqueueExpiredVersions(db: Database, now: Date): Promise<number> 
         }
       }
 
-      return insertedCount;
+      return { selectedCount: candidates.length, insertedCount };
     });
 
-    totalEnqueued += batchCount;
-    if (batchCount < EXPIRED_BATCH_SIZE) {
+    totalEnqueued += batch.insertedCount;
+    if (batch.selectedCount < EXPIRED_BATCH_SIZE) {
       break;
     }
   }
@@ -693,16 +742,28 @@ function ownerAttemptFence(taskId: string, workerId: string, attempts: number) {
   );
 }
 
-async function renewTaskLease(
+/**
+ * Extends an active task lease ONLY while `(id, state = 'running', lease_owner, attempts)`
+ * still match AND `lease_until > now`. If `lease_until` has already passed (e.g., a delayed
+ * heartbeat firing after an event-loop stall), renewal returns `false` so the worker aborts
+ * immediately instead of resurrecting an expired lease that another worker can reclaim.
+ */
+export async function renewTaskLease(
   db: Database,
   task: { id: string; attempts: number },
   workerId: string,
+  now: Date,
   leaseUntil: Date,
 ): Promise<boolean> {
   const renewed = await db
     .update(retentionTasks)
     .set({ leaseUntil })
-    .where(ownerAttemptFence(task.id, workerId, task.attempts))
+    .where(
+      and(
+        ownerAttemptFence(task.id, workerId, task.attempts),
+        gt(retentionTasks.leaseUntil, now),
+      ),
+    )
     .returning({ id: retentionTasks.id });
   return renewed.length > 0;
 }
@@ -741,8 +802,9 @@ async function deleteObjectWithLeaseProtection(
         return;
       }
       renewInFlight = true;
-      const nextLeaseUntil = new Date(context.currentNow().getTime() + context.leaseMs);
-      void renewTaskLease(deps.db, task, context.workerId, nextLeaseUntil)
+      const renewNow = context.currentNow();
+      const nextLeaseUntil = new Date(renewNow.getTime() + context.leaseMs);
+      void renewTaskLease(deps.db, task, context.workerId, renewNow, nextLeaseUntil)
         .then((stillOwned) => {
           if (!stillOwned && !abortController.signal.aborted) {
             leaseLost = true;

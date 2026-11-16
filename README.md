@@ -40,8 +40,14 @@ The browser dev server proxies `/api` to `http://localhost:3000`. A local previe
 - **Behavior when the API is stopped or suspended**: Because the scheduler runs inside the API process, physical R2/database sweeps pause while the process is stopped or spun down on a sleeping free-tier host (such as Render Free after 15 minutes of inactivity). On the very next process start or wake-up, `attachRetentionRuntime` immediately executes a catch-up retention pass (`runOnStart: true`) that enqueues any versions whose `expires_at` passed while offline and reclaims any expired `running` leases. Strict wall-clock SLA enforcement without wake-up delay requires an always-on instance or a scheduled cron trigger.
 - **Dead-letter alerting and operator requeue**: Transient R2 failures reschedule tasks in `retryable_failure` using bounded exponential backoff with jitter up to `RETENTION_MAX_ATTEMPTS` (default 8), after which tasks enter `state = "failed"` and emit structured `retention.permanent_failure` and periodic `retention.dead_letter_backlog` error logs. Once an operator resolves the underlying R2 outage or credential issue, permanently failed tasks can be safely requeued (`attempts` reset to `0`, `state = "pending"`, audited via `retention_task_requeued`) and processed immediately with:
   ```bash
-  corepack pnpm --filter @vervecv/api retention:requeue
-  # Optional flags: --task-id <uuid> (repeatable), --limit <1..1000>, --no-run
+  # Preview failed tasks without mutating DB state:
+  corepack pnpm --filter @vervecv/api retention:requeue -- --dry-run
+
+  # Targeted recovery of specific task ID(s):
+  corepack pnpm --filter @vervecv/api retention:requeue -- --task-id <uuid>
+
+  # Confirmed bulk recovery (optional --limit <1..1000> and --no-run):
+  corepack pnpm --filter @vervecv/api retention:requeue -- --all
   ```
 - **Privacy & backup boundary**: Completed purges delete the R2 object, `findings`, `evaluations`, and `evaluation_jobs`, replace `object_key` with `purged_<versionId>`, and scrub filenames, titles, candidate types, and SHA-256 hashes. The application does not claim that Neon point-in-time recovery or R2 noncurrent versions are removed.
 
