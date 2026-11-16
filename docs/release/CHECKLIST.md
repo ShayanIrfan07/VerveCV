@@ -98,5 +98,5 @@ From [`docs/adr/0001-open-product-decisions.md`](../adr/0001-open-product-decisi
 | CI green on release SHA (including `test:e2e`) | | |
 | All seven staging capability rows above complete | | |
 | Open ADR limitations disclosed in product UI/docs | | |
-| Rollback owner identified; PITR reconciliation procedure reviewed | | |
+| Rollback owner identified; PITR procedure reviewed (retention execution paused before PITR through classification; resume only after recorded decisions + validation) | | |
 | No merge/deploy without explicit approval | | |
