@@ -234,7 +234,7 @@ Each phase is a separate branch and pull request. This branch is `feature/archit
 | 6 | `feature/evaluation-dashboard` | Score UI and history |
 | 7 | `feature/retention-and-hardening` | Jobs, retryable R2 + DB physical deletion worker (release-blocking for `DELETE /resumes/:id` and 90-day expiry), rate limits |
 | 8 | `feature/pro-subscriptions` | Starts only after pricing, quotas, and a provider are approved |
-| 9 | `feature/release-readiness` | Release checklist |
+| 9 | `feature/release-readiness` | Release checklist, staging/rollback runbooks, `pnpm release:check`, CI `db:check` |
 
 ## 12. Phase 0 boundary
 
