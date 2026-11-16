@@ -47,6 +47,12 @@ jobs:
       - name: Check dependency footprint
         run: pnpm size:check
 
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end checks
+        run: pnpm test:e2e
+
       - name: Check diff whitespace
         env:
           EVENT_NAME: ${{ github.event_name }}

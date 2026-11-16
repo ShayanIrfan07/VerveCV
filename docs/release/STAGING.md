@@ -24,19 +24,27 @@ Unset parse/signed-URL values refuse server-side parsing and signed URLs by desi
 3. Apply Drizzle migrations against the staging database before traffic.
 4. Confirm retention: with `NODE_ENV=production`, database, and R2 configured, startup runs an immediate retention pass and a periodic scheduler (`RETENTION_POLL_MS`, default 5 minutes).
 
-## Staging smoke checklist
+## Required staging sign-off capabilities
 
-- [ ] `health/live` → 200
-- [ ] `health/ready` → 200
-- [ ] Register + login + logout; cookies are `HttpOnly` / `SameSite=Lax` (`Secure` in production)
-- [ ] Upload PDF/DOCX under the byte limit; reject oversize and bad magic
-- [ ] Evaluate a verified resume; provisional score discloses withheld criteria
-- [ ] Delete a resume; access revoked immediately; retention task completes or retries without leaking PII in logs
-- [ ] Cross-origin mutation without an allowed `Origin` is rejected
-- [ ] Footprint: `pnpm size:check` still passes on the deployed revision
+Each row is a separate release sign-off. Do not collapse them into a single “smoke passed” checkbox. Record owner, date, and evidence (request IDs or staging URLs—never passwords or resume bytes) in [`CHECKLIST.md`](./CHECKLIST.md).
+
+| Capability | Pass criteria |
+|---|---|
+| Authentication | Register, login, logout, session restore after refresh; mutating requests without an allowed `Origin` fail; cookies are `HttpOnly` / `SameSite=Lax` (`Secure` when `NODE_ENV=production`). |
+| PDF upload | Upload a valid PDF under the byte limit through intent → PUT → complete; reject oversize and bad magic; preview/verification path works with configured parse caps. |
+| DOCX upload | Same as PDF for a valid DOCX; reject legacy DOC and corrupt archives per product rules. |
+| Evaluation | Run evaluation on a verified resume; response stays provisional; withheld criteria are disclosed; no client-supplied score is accepted. |
+| Score history | A second evaluation (or prior row) appears in history for the same user/resume path without exposing another user’s results. |
+| Deletion | `DELETE /api/v1/resumes/:id` immediately revokes list/get/view-url/evaluate access and scrubs filename/title fields. |
+| Retention completion | The enqueued retention task reaches `completed` (or an observed retry that later completes): R2 object removed, derived evaluation/finding rows gone, `object_key` scrubbed to `purged_<versionId>`, logs free of resume text/PII. |
+
+## Mandatory Playwright gate before production
+
+`pnpm test:e2e` is required in CI on this branch and must also be green against the release SHA before production sign-off. Staging UI sign-off above does not replace that automated E2E gate.
 
 ## Free-tier caveats
 
 - Render free web services spin down after inactivity; retention sweeps resume on the next wake (`runOnStart: true`).
 - Neon free databases have storage and expiry limits; treat them as finite.
 - Do not describe Free plan capacity as unlimited while quotas are unset (ADR 0001 decision 10).
+- Version 1 remains Free-only, deterministic/rule-based, 90-day retention, and inside the 100 MiB source + production-dependency footprint.

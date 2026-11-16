@@ -24,7 +24,7 @@ corepack pnpm release:check
 corepack pnpm test:e2e
 ```
 
-`pnpm release:check` runs lint, typecheck, `db:check`, tests, build, `size:check`, then an API memory/latency probe and writes `docs/release/measurements.json`. Playwright browsers are required only for `pnpm test:e2e` (`corepack pnpm exec playwright install chromium`).
+`pnpm release:check` runs lint, typecheck, `db:check`, tests, build, and `size:check`, then an in-process Fastify `inject` probe of `GET /api/v1/health/live` (`db=null`). That probe is not production API performance and excludes database, upload, evaluation, and R2 latency. Machine-local output goes to gitignored `docs/release/measurements.local.json` and must not overwrite the tracked example. `pnpm test:e2e` is a required CI and pre-production gate (`corepack pnpm exec playwright install chromium` once locally).
 
 The API listens on `0.0.0.0:$PORT` (`PORT` defaults to 3000). `GET /api/v1/health/live` reports that the process is up. `GET /api/v1/health/ready` checks the database when `DATABASE_URL` is set.
 
@@ -69,5 +69,6 @@ Session lifetime (`SESSION_TTL_SECONDS`, default 12 hours), authentication rate 
 - [Release checklist](docs/release/CHECKLIST.md)
 - [Staging deployment](docs/release/STAGING.md)
 - [Rollback strategy](docs/release/ROLLBACK.md)
+- [Example in-process probe output](docs/release/measurements.example.json)
 
 Authoritative scores stay provisional until the open decisions that affect scoring are approved. A provisional result is not rescaled to 100.

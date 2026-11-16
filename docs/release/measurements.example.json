@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-11-16T09:48:29.738Z",
+  "completedAt": "2026-11-16T09:51:14.113Z",
+  "node": "v24.18.0",
+  "platform": "win32/x64",
+  "gates": ["lint", "typecheck", "db:check", "test", "build", "size:check"],
+  "probe": {
+    "kind": "fastify-inject-health-live",
+    "scope": "in-process-only",
+    "excludes": ["database", "upload", "evaluation", "parse", "r2"],
+    "rounds": 50,
+    "latencyMs": {
+      "p50": 0.144,
+      "p95": 0.508,
+      "max": 95.631
+    },
+    "memory": {
+      "beforeRss": 211804160,
+      "afterRss": 214999040,
+      "beforeHeapUsed": 29745616,
+      "afterHeapUsed": 48119280,
+      "rssDelta": 3194880,
+      "heapDelta": 18373664
+    }
+  },
+  "notes": [
+    "EXAMPLE ONLY. pnpm release:check writes docs/release/measurements.local.json and must not overwrite this tracked file.",
+    "This probe uses Fastify light-my-request inject against GET /api/v1/health/live with db=null.",
+    "It measures in-process HTTP handler overhead only.",
+    "It is not representative of production API latency and does not include Neon/database, upload, evaluation, parsing, or Cloudflare R2 time.",
+    "RSS/heap snapshots are workstation process.memoryUsage() values around that inject loop; they are not a production host memory SLA."
+  ]
+}
