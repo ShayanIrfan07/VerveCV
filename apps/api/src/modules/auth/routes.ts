@@ -213,7 +213,42 @@ async function currentUser(db: Database, request: Parameters<typeof readSignedCo
   return readSessionUser(db, sessionId);
 }
 
+const DATABASE_UNAVAILABLE_CODES = new Set([
+  "28P01",
+  "28000",
+  "08000",
+  "08001",
+  "08003",
+  "08004",
+  "08006",
+  "08007",
+  "53300",
+  "57P01",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+]);
+
+function isDatabaseUnavailable(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if ("code" in current && typeof current.code === "string" && DATABASE_UNAVAILABLE_CODES.has(current.code)) {
+      return true;
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
+}
+
 function sendAuthError(error: unknown, reply: FastifyReply, requestId: string) {
+  if (isDatabaseUnavailable(error)) {
+    reply.log.error({ err: error }, "database unavailable");
+    return reply.status(503).send(errorBody("DATABASE_UNAVAILABLE", "Database is unavailable", requestId));
+  }
   if (error instanceof AuthError) {
     return reply.status(error.statusCode).send(errorBody(error.code, error.message, requestId));
   }
