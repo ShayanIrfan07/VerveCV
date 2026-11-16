@@ -1,6 +1,6 @@
 # Version 1 production checklist
 
-Branch: `feature/release-readiness`  
+Branch: `feature/release-readiness`
 Phase 8 (`feature/pro-subscriptions`) is intentionally skipped until ADR 0001 decisions 10 (pricing/quotas) and 11 (payment provider) are approved.
 
 Version 1 constraints that remain binding: deterministic rule-based scoring (no LLM/RAG), Free-only launch, 90-day retention with physical delete, and ≤ 100 MiB tracked source + production dependencies.

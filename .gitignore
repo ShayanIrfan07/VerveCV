@@ -12,4 +12,3 @@ playwright-report/
 blob-report/
 .neon
 docs/release/measurements.local.json
-
