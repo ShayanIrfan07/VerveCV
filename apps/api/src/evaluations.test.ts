@@ -9,16 +9,20 @@ import { buildApp } from "./app.js";
 import { loadConfig, type AppConfig } from "./config.js";
 import type { Database } from "./infrastructure/db/client.js";
 import * as schema from "./infrastructure/db/schema.js";
-import { MemoryStorage } from "./infrastructure/storage/memory.js";
+import { MemoryStorage, type ObjectStorage } from "./infrastructure/storage/memory.js";
+import { createEvaluation } from "./modules/evaluations/service.js";
 import { ParseGate } from "./modules/uploads/parse-gate.js";
 
 const ORIGIN = "http://localhost:5173";
 
-async function createTestApp() {
+type PutStorage = ObjectStorage & {
+  put(key: string, bytes: Uint8Array): Promise<void>;
+};
+
+async function createTestApp(storage: PutStorage = new MemoryStorage()) {
   const client = new PGlite();
   const database = drizzle(client, { schema });
   await migrate(database, { migrationsFolder: path.resolve("database/migrations") });
-  const storage = new MemoryStorage();
   const base = loadConfig({
     LOG_LEVEL: "silent",
     ALLOWED_ORIGINS: ORIGIN,
@@ -45,13 +49,14 @@ async function createTestApp() {
     maxQueue: config.parseMaxQueue,
     maxWaitMs: config.parseQueueTimeoutMs,
   });
+  const db = database as unknown as Database;
   const app = await buildApp({
     config,
-    db: database as unknown as Database,
+    db,
     storage,
     parseGate,
   });
-  return { app, client, pgliteDb: database, storage, parseGate };
+  return { app, client, db, pgliteDb: database, storage, parseGate, config };
 }
 
 async function sessionFor(app: Awaited<ReturnType<typeof buildApp>>, email: string): Promise<string> {
@@ -74,7 +79,7 @@ async function sessionFor(app: Awaited<ReturnType<typeof buildApp>>, email: stri
 
 async function createPendingVersion(
   app: Awaited<ReturnType<typeof buildApp>>,
-  storage: MemoryStorage,
+  storage: PutStorage,
   cookie: string,
   filename = "AdaLovelace_Resume.pdf",
 ) {
@@ -94,7 +99,7 @@ async function createPendingVersion(
 
 async function verifiedVersion(
   app: Awaited<ReturnType<typeof buildApp>>,
-  storage: MemoryStorage,
+  storage: PutStorage,
   cookie: string,
   filename = "AdaLovelace_Resume.pdf",
 ) {
@@ -649,6 +654,57 @@ describe("evaluation dashboard API", () => {
     const stored = await pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations);
     expect(stored.map((row) => row.id)).toEqual([benignId.id]);
 
+    await app.close();
+    await client.close();
+  });
+
+  it("cancels the stored-object read when scoring is aborted", async () => {
+    const memory = new MemoryStorage();
+    const controller = new AbortController();
+    let reads = 0;
+    const storage: PutStorage = {
+      put: (key, bytes) => memory.put(key, bytes),
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: (key, options) => {
+        reads += 1;
+        if (reads === 1) {
+          return memory.get(key, options);
+        }
+        return new Promise((_resolve, reject) => {
+          const abort = () => reject(new Error("aborted"));
+          if (options?.signal?.aborted) {
+            abort();
+            return;
+          }
+          options?.signal?.addEventListener("abort", abort, { once: true });
+          controller.abort();
+        });
+      },
+    };
+    const { app, client, pgliteDb, config, parseGate, db } = await createTestApp(storage);
+    const owner = await sessionFor(app, "abort-score@example.com");
+    const verified = await verifiedVersion(app, storage, owner, "Abort_Score.pdf");
+    const user = await pgliteDb.select({ id: schema.users.id }).from(schema.users);
+    const userId = user[0]?.id;
+    if (!userId) {
+      throw new Error("missing user");
+    }
+    await expect(
+      createEvaluation(
+        { db, storage, config, parseGate },
+        userId,
+        {
+          resumeVersionId: verified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey: "abort-read",
+        },
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ statusCode: 499, code: "REQUEST_ABORTED" });
+    expect(await pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations)).toEqual([]);
     await app.close();
     await client.close();
   });

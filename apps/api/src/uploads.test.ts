@@ -667,6 +667,158 @@ describe("resume upload", () => {
     await bounded.client.close();
   });
 
+  it("claims an abandoned upload before deleting its object and keeps the object when deletion fails", async () => {
+    const memory = new MemoryStorage();
+    const refs: { database?: Awaited<ReturnType<typeof createTestApp>>["pgliteDb"] } = {};
+    const storage: ObjectStorage = {
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      get: (key, options) => memory.get(key, options),
+      delete: async (key) => {
+        const rows = await refs.database!
+          .select({
+            verificationState: schema.resumeVersions.verificationState,
+            deletionState: schema.resumeVersions.deletionState,
+          })
+          .from(schema.resumeVersions)
+          .where(eq(schema.resumeVersions.objectKey, key));
+        expect(rows[0]).toEqual({
+          verificationState: "rejected",
+          deletionState: "delete_requested",
+        });
+        await memory.delete(key);
+      },
+    };
+    const harness = await createTestApp(
+      { signedUrlTtlSeconds: 60, uploadIntentGraceSeconds: 0 },
+      { storage },
+    );
+    refs.database = harness.pgliteDb;
+    const { userId } = await sessionFor(harness.app, "claim-before-delete@example.com");
+    const uploadDeps = {
+      db: harness.db,
+      storage,
+      config: harness.config,
+      parseGate: harness.parseGate,
+    };
+    const t0 = new Date("2026-11-12T10:00:00.000Z");
+    const intent = await createUploadIntent(
+      uploadDeps,
+      userId,
+      { filename: "Abandoned.pdf", mimeType: PDF_MIME, sizeBytes: 100 },
+      { now: t0 },
+    );
+    const key = intent.upload.url.replace("memory://upload/", "");
+    await memory.put(key, new Uint8Array(100));
+
+    const swept = await cleanupAbandonedUploadIntents(uploadDeps, {
+      userId,
+      now: new Date(t0.getTime() + 61_000),
+    });
+    expect(swept).toBe(1);
+    expect(memory.has(key)).toBe(false);
+    expect(await harness.pgliteDb.select().from(schema.resumeVersions)).toHaveLength(0);
+    expect(await harness.pgliteDb.select().from(schema.resumes)).toHaveLength(0);
+
+    let deletes = 0;
+    const failing: ObjectStorage = {
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      get: (key, options) => memory.get(key, options),
+      delete: async () => {
+        deletes += 1;
+        throw new Error("R2 503 SlowDown");
+      },
+    };
+    const failedIntent = await createUploadIntent(
+      { ...uploadDeps, storage: failing },
+      userId,
+      { filename: "Stuck.pdf", mimeType: PDF_MIME, sizeBytes: 100 },
+      { now: t0 },
+    );
+    const failedKey = failedIntent.upload.url.replace("memory://upload/", "");
+    await memory.put(failedKey, new Uint8Array(100));
+    const failedSweep = await cleanupAbandonedUploadIntents(
+      { ...uploadDeps, storage: failing },
+      { userId, now: new Date(t0.getTime() + 61_000) },
+    );
+    expect(failedSweep).toBe(1);
+    expect(deletes).toBe(1);
+    expect(memory.has(failedKey)).toBe(true);
+    const stuck = await harness.pgliteDb
+      .select({
+        verificationState: schema.resumeVersions.verificationState,
+        deletionState: schema.resumeVersions.deletionState,
+        originalFilename: schema.resumeVersions.originalFilename,
+      })
+      .from(schema.resumeVersions)
+      .where(eq(schema.resumeVersions.id, failedIntent.versionId));
+    expect(stuck[0]).toEqual({
+      verificationState: "rejected",
+      deletionState: "delete_requested",
+      originalFilename: "deleted",
+    });
+    const task = await harness.pgliteDb
+      .select({ state: schema.retentionTasks.state })
+      .from(schema.retentionTasks)
+      .where(eq(schema.retentionTasks.resumeVersionId, failedIntent.versionId));
+    expect(task).toEqual([{ state: "pending" }]);
+
+    await harness.app.close();
+    await harness.client.close();
+  });
+
+  it("cancels the stored-object read when verification is aborted", async () => {
+    const memory = new MemoryStorage();
+    const controller = new AbortController();
+    const storage: ObjectStorage = {
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: (_key, options) =>
+        new Promise((_resolve, reject) => {
+          const abort = () => reject(new Error("aborted"));
+          if (options?.signal?.aborted) {
+            abort();
+            return;
+          }
+          options?.signal?.addEventListener("abort", abort, { once: true });
+          controller.abort();
+        }),
+    };
+    const harness = await createTestApp({}, { storage });
+    const { cookie, userId } = await sessionFor(harness.app, "abort-read@example.com");
+    const intent = await harness.app.inject({
+      method: "POST",
+      url: "/api/v1/resumes/upload-intents",
+      headers: { origin: ORIGIN, cookie },
+      payload: { filename: "Abort.pdf", mimeType: PDF_MIME, sizeBytes: 100 },
+    });
+    expect(intent.statusCode).toBe(201);
+    const created = intent.json<{ resumeId: string; versionId: string }>();
+    await expect(
+      completeUpload(
+        {
+          db: harness.db,
+          storage,
+          config: harness.config,
+          parseGate: harness.parseGate,
+        },
+        userId,
+        created.resumeId,
+        created.versionId,
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ statusCode: 499, code: "REQUEST_ABORTED" });
+    const pending = await harness.pgliteDb
+      .select({ state: schema.resumeVersions.verificationState })
+      .from(schema.resumeVersions)
+      .where(eq(schema.resumeVersions.id, created.versionId));
+    expect(pending).toEqual([{ state: "pending" }]);
+    await harness.app.close();
+    await harness.client.close();
+  });
+
   it("paginates resume listings and fetches individual resumes with a direct ownership-scoped query", async () => {
     const { app, client, storage } = await createTestApp({ maxPendingUploadsPerUser: 20 });
     const { cookie } = await sessionFor(app, "pager@example.com");

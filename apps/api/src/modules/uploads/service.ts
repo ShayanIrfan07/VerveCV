@@ -218,15 +218,7 @@ async function cleanupSingleAbandonedVersion(
   cutoff: Date,
   now: Date,
 ): Promise<boolean> {
-  let objectRemoved = false;
-  try {
-    await deps.storage.delete(stale.objectKey);
-    objectRemoved = true;
-  } catch {
-    objectRemoved = false;
-  }
-
-  return deps.db.transaction(async (tx) => {
+  const claimed = await deps.db.transaction(async (tx) => {
     const locked = await tx
       .select({
         id: resumeVersions.id,
@@ -248,20 +240,8 @@ async function cleanupSingleAbandonedVersion(
       return false;
     }
 
-    if (objectRemoved) {
-      await tx.delete(resumeVersions).where(eq(resumeVersions.id, stale.versionId));
-      const remaining = await tx
-        .select({ total: count() })
-        .from(resumeVersions)
-        .where(eq(resumeVersions.resumeId, stale.resumeId));
-      if (Number(remaining[0]?.total ?? 0) === 0) {
-        await tx.delete(resumes).where(eq(resumes.id, stale.resumeId));
-      }
-      return true;
-    }
-
-    // Storage delete failed transiently: transition out of pending, scrub filenames, and enqueue a
-    // retention task for the retryable deletion worker so no R2 object or personal filename is leaked.
+    // Claim the row before touching R2 so an in-flight verification can no longer
+    // commit this object as a readable resume.
     await tx
       .update(resumeVersions)
       .set({
@@ -275,6 +255,33 @@ async function cleanupSingleAbandonedVersion(
       state: "pending",
       nextAttemptAt: now,
     });
+    return true;
+  });
+  if (!claimed) {
+    return false;
+  }
+
+  let objectRemoved = false;
+  try {
+    await deps.storage.delete(stale.objectKey);
+    objectRemoved = true;
+  } catch {
+    objectRemoved = false;
+  }
+
+  return deps.db.transaction(async (tx) => {
+    if (objectRemoved) {
+      await tx.delete(resumeVersions).where(eq(resumeVersions.id, stale.versionId));
+      const remaining = await tx
+        .select({ total: count() })
+        .from(resumeVersions)
+        .where(eq(resumeVersions.resumeId, stale.resumeId));
+      if (Number(remaining[0]?.total ?? 0) === 0) {
+        await tx.delete(resumes).where(eq(resumes.id, stale.resumeId));
+      }
+      return true;
+    }
+
     const activeSiblings = await tx
       .select({ total: count() })
       .from(resumeVersions)
@@ -337,8 +344,12 @@ export async function completeUpload(
   try {
     bytes = await deps.storage.get(version.objectKey, {
       maxBytes: deps.config.uploadLimitBytes,
+      signal: options.signal,
     });
   } catch (error) {
+    if (options.signal?.aborted) {
+      throw new UploadError(499, "REQUEST_ABORTED", "Request was cancelled.");
+    }
     if (error instanceof StorageObjectTooLargeError) {
       await markRejectedIfPending(deps.db, version.id);
       throw new UploadError(413, "PAYLOAD_TOO_LARGE", "The file is larger than the upload limit.");

@@ -1,4 +1,4 @@
-import { MAX_SIGNED_URL_TTL_SECONDS } from "./infrastructure/storage/r2.js";
+import { assertR2Config, MAX_SIGNED_URL_TTL_SECONDS } from "./infrastructure/storage/r2.js";
 import type { AuthRateLimits, RateLimitRule } from "./modules/auth/rate-limit.js";
 import {
   DEFAULT_PRODUCTION_RETENTION_POLL_MS,
@@ -314,5 +314,7 @@ function readR2(env: NodeJS.ProcessEnv): AppConfig["r2"] {
   if (present !== values.length) {
     throw new Error("R2 configuration is incomplete");
   }
-  return { accountId, accessKeyId, secretAccessKey, bucket };
+  const config = { accountId, accessKeyId, secretAccessKey, bucket };
+  assertR2Config(config);
+  return config;
 }

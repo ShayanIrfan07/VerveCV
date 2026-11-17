@@ -111,9 +111,18 @@ export async function createEvaluation(
     throw new EvaluationError(503, "PARSE_LIMITS_UNSET", "Parse limits are not configured.");
   }
 
-  const bytes = await deps.storage.get(version.objectKey, {
-    maxBytes: deps.config.uploadLimitBytes,
-  });
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await deps.storage.get(version.objectKey, {
+      maxBytes: deps.config.uploadLimitBytes,
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (options.signal?.aborted) {
+      throw new EvaluationError(499, "REQUEST_ABORTED", "Request was cancelled.");
+    }
+    throw error;
+  }
   if (!bytes) {
     throw new EvaluationError(422, "CORRUPT", "The stored file could not be read.");
   }
