@@ -60,7 +60,7 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
         return;
       }
       if (created.status !== 201) {
-        setMessage(failureMessage(created, "register"));
+        setMessage(failureMessage(created, "Registration failed."));
         return;
       }
       const signedIn = await apiRequest<AuthBody>("/api/v1/auth/login", {
@@ -106,7 +106,7 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
         setMessage("");
         return;
       }
-      setMessage(failureMessage(result, "logout"));
+      setMessage(failureMessage(result, "Sign-out failed."));
     } catch (error) {
       setMessage("The service could not sign you out.");
       console.error(error);
@@ -197,26 +197,7 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
   );
 }
 
-type AuthOperation = "register" | "login" | "logout";
-
-function serviceUnavailableMessage(operation: AuthOperation, requestId?: string): string {
-  const service =
-    operation === "register" ? "Registration service" : operation === "logout" ? "Sign-out service" : "Sign-in service";
-  const base = `${service} is temporarily unavailable.`;
-  return requestId ? `${base} Request ID: ${requestId}` : base;
-}
-
-function failureFallback(operation: AuthOperation): string {
-  if (operation === "register") {
-    return "Registration failed.";
-  }
-  if (operation === "logout") {
-    return "Sign-out failed.";
-  }
-  return "Sign-in failed.";
-}
-
-function failureMessage(result: ApiResult<AuthBody>, operation: AuthOperation = "login"): string {
+function failureMessage(result: ApiResult<AuthBody>, fallback = "Sign-in failed."): string {
   const error = result.body?.error;
   if (result.status === 401) {
     return error?.message ?? "The email or password is incorrect.";
@@ -230,7 +211,10 @@ function failureMessage(result: ApiResult<AuthBody>, operation: AuthOperation = 
     return `${sentence} Try again in ${result.retryAfterSeconds} seconds.`;
   }
   if (result.status >= 500) {
-    return serviceUnavailableMessage(operation, error?.requestId);
+    if (error?.requestId) {
+      return `The service could not sign you in. Request ID: ${error.requestId}`;
+    }
+    return "The service could not sign you in.";
   }
-  return error?.message ?? failureFallback(operation);
+  return error?.message ?? fallback;
 }

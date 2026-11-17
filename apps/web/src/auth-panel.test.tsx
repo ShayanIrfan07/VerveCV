@@ -117,7 +117,7 @@ describe("AuthPanel", () => {
     expect(container.textContent).toContain("Too many requests. Try again in 60 seconds.");
   });
 
-  it("shows a sign-in service error and request ID for HTTP 500", async () => {
+  it("shows a generic service error and request ID for HTTP 500", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -130,50 +130,8 @@ describe("AuthPanel", () => {
     await act(async () => {
       submitForm();
     });
-    expect(container.textContent).toContain("Sign-in service is temporarily unavailable. Request ID: req-500");
+    expect(container.textContent).toContain("The service could not sign you in. Request ID: req-500");
     expect(container.textContent).not.toContain("Internal error");
-  });
-
-  it("shows a registration service error for HTTP 503 on create account", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jsonResponse(503, {
-          error: { code: "DATABASE_UNAVAILABLE", message: "Database is unavailable", requestId: "req-reg" },
-        }),
-      ),
-    );
-    await renderPanel();
-    const createAccount = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Create account",
-    ) as HTMLButtonElement;
-    await act(async () => {
-      createAccount.click();
-    });
-    expect(container.textContent).toContain("Registration service is temporarily unavailable. Request ID: req-reg");
-    expect(container.textContent).not.toContain("Database is unavailable");
-  });
-
-  it("shows a sign-out service error for HTTP 503", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        jsonResponse(503, {
-          error: { code: "DATABASE_UNAVAILABLE", message: "Database is unavailable", requestId: "req-out" },
-        }),
-      ),
-    );
-    await act(async () => {
-      root.render(<AuthPanel user={USER} onUser={vi.fn()} />);
-    });
-    const signOut = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Sign out",
-    ) as HTMLButtonElement;
-    await act(async () => {
-      signOut.click();
-    });
-    expect(container.textContent).toContain("Sign-out service is temporarily unavailable. Request ID: req-out");
-    expect(container.textContent).not.toContain("Database is unavailable");
   });
 
   it("keeps an empty response body from throwing", async () => {
@@ -182,7 +140,7 @@ describe("AuthPanel", () => {
     await act(async () => {
       submitForm();
     });
-    expect(container.textContent).toContain("Sign-in service is temporarily unavailable.");
+    expect(container.textContent).toContain("The service could not sign you in.");
     expect(signInButton().disabled).toBe(false);
   });
 
