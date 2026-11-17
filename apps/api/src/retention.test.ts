@@ -28,6 +28,15 @@ import { deleteResume } from "./modules/uploads/service.js";
 
 const ORIGIN = "http://localhost:5173";
 
+/**
+ * deleteResume schedules nextAttemptAt from the wall clock. A claim `now` frozen on
+ * 2026-11-16 is before that timestamp once the calendar passes it, so the task is not due.
+ * Capture the claim clock after the task exists.
+ */
+function dueClaimInstant(): Date {
+  return new Date(Date.now() + 1);
+}
+
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -193,7 +202,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
       },
     };
 
-    const t0 = new Date("2026-11-16T12:00:00.000Z");
+    const t0 = dueClaimInstant();
     const workerAPromise = runRetentionPass(
       { db, storage: gatedStorage },
       { now: t0, workerId: "worker-a", leaseMs: 60_000 },
@@ -205,7 +214,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     const leasedRow = (await pgliteDb.select().from(schema.retentionTasks))[0];
     expect(leasedRow?.state).toBe("running");
     expect(leasedRow?.leaseOwner).toBe("worker-a");
-    expect(leasedRow?.leaseUntil?.toISOString()).toBe("2026-11-16T12:01:00.000Z");
+    expect(leasedRow?.leaseUntil?.getTime()).toBe(t0.getTime() + 60_000);
 
     // Worker B attempts to run while Worker A's lease is active (t0 + 20s < t0 + 60s):
     // Worker B MUST NOT steal or execute the task!
@@ -241,9 +250,16 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
       },
     };
 
+    const simultaneousClaimAt = dueClaimInstant();
     const [sim1, sim2] = await Promise.all([
-      runRetentionPass({ db, storage: countingStorage }, { now: t0, workerId: "sim-1" }),
-      runRetentionPass({ db, storage: countingStorage }, { now: t0, workerId: "sim-2" }),
+      runRetentionPass(
+        { db, storage: countingStorage },
+        { now: simultaneousClaimAt, workerId: "sim-1" },
+      ),
+      runRetentionPass(
+        { db, storage: countingStorage },
+        { now: simultaneousClaimAt, workerId: "sim-2" },
+      ),
     ]);
     expect(sim1.succeeded + sim2.succeeded).toBe(1);
     expect(secondDeleteCalls).toBe(1);
@@ -258,7 +274,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     const uploaded = await uploadAndVerifyPdf(app, memoryStorage, cookie);
     await deleteResume(db, userId, uploaded.resumeId);
 
-    const t0 = new Date("2026-11-16T13:00:00.000Z");
+    const t0 = dueClaimInstant();
 
     // Simulate a worker that claimed the lease at t0 (leaseUntil = t0 + 60s) and then crashed
     // hard (SIGKILL / OOM) mid-storage-delete before updating retention_tasks:
@@ -359,7 +375,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
       error: (bindings) => errorLogs.push(bindings),
     };
 
-    const t0 = new Date("2026-11-16T14:00:00.000Z");
+    const t0 = dueClaimInstant();
     // Attempt 1 fails -> backoff with base=2000ms, random=0.999 -> nextAttemptAt = t0 + 2000ms
     const pass1 = await runRetentionPass(
       { db, storage: flakyStorage, logger },
@@ -417,7 +433,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     failStorage = true;
     const permanentAlerts: PermanentRetentionFailure[] = [];
 
-    let cursor = new Date("2026-11-16T15:00:00.000Z");
+    let cursor = dueClaimInstant();
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       await runRetentionPass(
         { db, storage: flakyStorage, logger },
@@ -795,7 +811,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     const enteredAttempt2 = deferred();
     const releaseAttempt2 = deferred();
 
-    const tStart = new Date("2026-11-16T16:00:00.000Z");
+    const tStart = dueClaimInstant();
     // Attempt 1 claimed by "shared-worker-id" with renewal disabled (simulating frozen process)
     const attempt1Promise = runRetentionPass(
       { db, storage: pauseFirstAttemptStorage },
@@ -873,7 +889,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     };
 
     // Exhaust maxAttempts = 2 -> task enters terminal "failed" state
-    const t0 = new Date("2026-11-16T18:00:00.000Z");
+    const t0 = dueClaimInstant();
     await runRetentionPass(
       { db, storage: brokenStorage, logger },
       { now: t0, baseBackoffMs: 100, maxBackoffMs: 1_000, maxAttempts: 2 },
@@ -1223,7 +1239,13 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
     // Reset task back to pending for end-to-end delayed-heartbeat + competing-worker reclaim test
     await pgliteDb
       .update(schema.retentionTasks)
-      .set({ state: "pending", attempts: 0, leaseOwner: null, leaseUntil: null })
+      .set({
+        state: "pending",
+        attempts: 0,
+        leaseOwner: null,
+        leaseUntil: null,
+        nextAttemptAt: new Date(Date.parse("2026-11-16T21:05:00.000Z")),
+      })
       .where(eq(schema.retentionTasks.id, seededTask.id));
 
     // Simulate an event-loop stall in Worker A: Worker A claims at t=0 with leaseMs=40ms,
@@ -1325,7 +1347,7 @@ describe("retention worker leases, concurrency, crash recovery, backoff, and pri
       },
     };
 
-    const t0 = new Date("2026-11-16T22:00:00.000Z");
+    const t0 = dueClaimInstant();
     const pass1 = await runRetentionPass(
       { db, storage: r2CompletesAfterTimeoutStorage },
       {
