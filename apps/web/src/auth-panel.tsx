@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 import { apiRequest, type ApiResult, type SessionUser } from "./api";
+import { card, field, primaryButton, secondaryButton } from "./ui";
 
 interface AuthPanelProps {
   user: SessionUser | null;
@@ -117,30 +118,30 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
 
   if (user) {
     return (
-      <section className="rounded-2xl border border-slate-200 bg-white p-5">
-        <h2 className="text-lg font-semibold text-slate-950">Account</h2>
-        <p className="mt-2 text-slate-700">{user.email}</p>
+      <section className={card}>
+        <h2 className="text-lg font-semibold text-ink">Account</h2>
+        <p className="mt-2 break-all text-muted">{user.email}</p>
         <button
-          className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-60"
+          className={`mt-4 ${secondaryButton}`}
           disabled={pending}
           onClick={() => void logout()}
           type="button"
         >
           Sign out
         </button>
-        {message ? <p className="mt-3 text-sm text-red-700">{message}</p> : null}
+        {message ? <p className="mt-3 text-sm text-danger">{message}</p> : null}
       </section>
     );
   }
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5">
-      <h2 className="text-lg font-semibold text-slate-950">Account</h2>
+    <section className={card}>
+      <h2 className="text-lg font-semibold text-ink">Account</h2>
       <form className="mt-4 grid gap-3" onSubmit={(event) => void login(event)}>
-        <label className="grid gap-1 text-sm text-slate-700">
+        <label className="grid gap-1 text-sm text-muted">
           Email
           <input
-            className="rounded-lg border border-slate-300 px-3 py-2"
+            className={field}
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             type="email"
@@ -148,10 +149,10 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
             required
           />
         </label>
-        <label className="grid gap-1 text-sm text-slate-700">
+        <label className="grid gap-1 text-sm text-muted">
           Password
           <input
-            className="rounded-lg border border-slate-300 px-3 py-2"
+            className={field}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             type="password"
@@ -160,10 +161,10 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
             required
           />
         </label>
-        <label className="grid gap-1 text-sm text-slate-700">
+        <label className="grid gap-1 text-sm text-muted">
           Display name
           <input
-            className="rounded-lg border border-slate-300 px-3 py-2"
+            className={field}
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
             type="text"
@@ -172,14 +173,14 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
         </label>
         <div className="flex gap-2">
           <button
-            className="rounded-lg bg-slate-950 px-3 py-2 text-sm text-white disabled:opacity-60"
+            className={primaryButton}
             disabled={pending}
             type="submit"
           >
             {pending ? "Signing in" : "Sign in"}
           </button>
           <button
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:opacity-60"
+            className={secondaryButton}
             disabled={pending}
             onClick={() => void register()}
             type="button"
@@ -188,7 +189,7 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
           </button>
         </div>
         {message ? (
-          <p className="text-sm text-red-700" role="alert">
+          <p className="text-sm text-danger" role="alert">
             {message}
           </p>
         ) : null}

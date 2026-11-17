@@ -85,6 +85,38 @@ describe("spelling dictionary + versioned technical-term allowlist", () => {
 });
 
 describe("deterministic grammar, spelling, and punctuation rules", () => {
+  it("accepts productive technical variants and document proper nouns, and reports one finding per misspelling", () => {
+    const document = singleBlockResume(
+      "Flutrr built an agentic signup flow with unguessable links. The agentic signups remained unguessable. Recieve Recieve the report.",
+    );
+    const first = document.blocks[0];
+    if (!first) {
+      throw new Error("expected a resume block");
+    }
+    document.blocks.push({
+      ...first,
+      id: "block-1",
+      text: "Recieve the same report at flutrr.",
+      startOffset: 0,
+      endOffset: 34,
+    });
+    const rule = grammarAndSpellingRule(document);
+    const messages = rule.findings.filter((finding) => finding.ruleId === "grammar-spelling").map((finding) => finding.message);
+    expect(messages.some((message) => /agentic|signups|unguessable|flutrr|scalable|reusability|uptime/iu.test(message))).toBe(false);
+    const morphology = grammarAndSpellingRule(
+      singleBlockResume("Improved scalable reusability and uptime. Recieve the report."),
+    );
+    const morphologyMessages = morphology.findings
+      .filter((finding) => finding.ruleId === "grammar-spelling")
+      .map((finding) => finding.message);
+    expect(morphologyMessages.some((message) => /scalable|reusability|uptime/iu.test(message))).toBe(false);
+    expect(morphologyMessages.some((message) => message.includes("Recieve"))).toBe(true);
+    expect(messages.filter((message) => message.includes("Recieve"))).toHaveLength(1);
+    expect(grammarAndSpellingRule(singleBlockResume("Recieve the report.")).findings.some((finding) => finding.message.includes("Recieve"))).toBe(
+      true,
+    );
+  });
+
   it("flags actual misspellings as informational findings while withholding the grammar score per ADR 0001 item A9", () => {
     const corpus = loadProbeCorpus();
     const text = `Recieve teh update and optmize performace across ${corpus.knownMisspellings.join(" ")}.`;

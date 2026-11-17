@@ -10,6 +10,38 @@ export function samplePdfBytes(): Uint8Array {
   return pdfWithLines("Work Experience", "Shipped the export pipeline.");
 }
 
+export function linkedLabelPdfBytes(): Uint8Array {
+  const stream = "BT\n/F1 12 Tf\n72 720 Td\n(LinkedIn) Tj\nET";
+  const annot =
+    "<< /Type /Annot /Subtype /Link /Rect [72 708 140 730] /Border [0 0 0] /A << /S /URI /URI (https://www.linkedin.com/in/mina-kapoor) >> >>";
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Annots [6 0 R] /Resources << /Font << /F1 5 0 R >> >> >>",
+    null,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    annot,
+  ];
+  return pdfObjects(objects, stream);
+}
+
+export function linkedLabelDocxBytes(): Uint8Array {
+  const encoder = new TextEncoder();
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body><w:p><w:hyperlink r:id="rId5"><w:r><w:t>LinkedIn</w:t></w:r></w:hyperlink></w:p></w:body>
+</w:document>`;
+  const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://www.linkedin.com/in/mina-kapoor" TargetMode="External"/>
+</Relationships>`;
+  return createStoredZip([
+    { name: "[Content_Types].xml", data: encoder.encode(CONTENT_TYPES) },
+    { name: "word/document.xml", data: encoder.encode(documentXml) },
+    { name: "word/_rels/document.xml.rels", data: encoder.encode(rels) },
+  ]);
+}
+
 export function emptyPdfBytes(): Uint8Array {
   return pdfWithStream("0 0 20 20 re f");
 }
@@ -59,6 +91,10 @@ function pdfWithStream(stream: string): Uint8Array {
     null,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
   ];
+  return pdfObjects(objects, stream);
+}
+
+function pdfObjects(objects: Array<string | null>, stream: string): Uint8Array {
   const streamObject = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
   let body = "%PDF-1.4\n";
   const offsets: number[] = [];

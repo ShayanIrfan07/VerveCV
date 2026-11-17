@@ -196,6 +196,54 @@ describe("evaluate", () => {
     expect(ruleScore(evaluate(withSections(["WORK_EXPERIENCE", "EDUCATION", "SKILLS"]), { ...options, candidateType: "EXPERIENCED" }), "required-sections")).toBe(4);
   });
 
+  it("recognizes a header name, common LinkedIn URLs, and a normalized filename without awarding an unapproved pattern", () => {
+    const header = "\u00a0Mina Kapoor | mina@example.com | +1 415 555 0134 | linkedin.com/mina-kapoor";
+    const document = withText(header);
+    document.filename = "MinaKapoor_CV.pdf";
+    const result = evaluate(document, { ...options, candidateName: "Other Person", jobDescription: "TypeScript engineer" });
+    expect(ruleScore(result, "contact-information")).toBe(4);
+    expect(result.criteria.find((item) => item.ruleId === "resume-filename")?.status).toBe("withheld");
+    expect(result.criteria.find((item) => item.ruleId === "resume-filename")?.findings[0]?.message).toContain(
+      "does not match an approved pattern",
+    );
+    expect(result.jdMatch).toEqual({ status: "not_implemented", appliedToScore: false });
+    expect(result.criteria.find((item) => item.ruleId === "readability")?.status).toBe("withheld");
+    expect(evaluate(document, { ...options, candidateName: "Other Person", jobDescription: "TypeScript engineer" })).toEqual(
+      result,
+    );
+
+    expect(ruleScore(evaluate(withText("https://www.linkedin.com/in/mina-kapoor"), options), "contact-information")).toBe(1);
+    expect(ruleScore(evaluate(withText("www.linkedin.com/in/mina-kapoor"), options), "contact-information")).toBe(1);
+    expect(ruleScore(evaluate(withText("LinkedIn"), options), "contact-information")).toBe(0);
+    expect(ruleScore(evaluate(withText("linkedin.com/jobs"), options), "contact-information")).toBe(0);
+    expect(ruleScore(evaluate(withText("https://github.com/mina-kapoor"), options), "contact-information")).toBe(0);
+
+    const split = emptyDocument();
+    split.blocks.push(
+      { ...block("left", "section-0", "Mina"), page: 1, boxes: [{ page: 1, x: 72, y: 720, width: 40, height: 14 }] },
+      { ...block("right", "section-0", "Kapoor"), page: 1, boxes: [{ page: 1, x: 116, y: 720, width: 50, height: 14 }] },
+    );
+    expect(ruleScore(evaluate(split, options), "contact-information")).toBe(1);
+
+    expect(ruleScore(evaluate(withText("MINA KAPOOR"), options), "contact-information")).toBe(1);
+    expect(ruleScore(evaluate(withText("mina kapoor mina@example.com"), options), "contact-information")).toBe(2);
+    expect(ruleScore(evaluate(withText("Software Engineer"), options), "contact-information")).toBe(0);
+
+    const separated = withText("Mina Kapoor");
+    separated.filename = "Mina_Kapoor_Resume.pdf";
+    expect(evaluate(separated, options).criteria.find((item) => item.ruleId === "resume-filename")?.status).toBe("withheld");
+    const dashed = withText("Mina Kapoor");
+    dashed.filename = "mina-kapoor.pdf";
+    expect(evaluate(dashed, options).criteria.find((item) => item.ruleId === "resume-filename")?.status).toBe("withheld");
+    const unrelated = withText("Mina Kapoor");
+    unrelated.filename = "Johnson_Resume.pdf";
+    expect(ruleScore(evaluate(unrelated, options), "resume-filename")).toBe(0);
+
+    const linked = withText("Mina Kapoor");
+    linked.metadata = { hyperlinks: ["https://www.linkedin.com/in/mina-kapoor"] };
+    expect(ruleScore(evaluate(linked, options), "contact-information")).toBe(2);
+  });
+
   it("scores an approved filename, withholds a named mismatch, and scores zero when the name is absent", () => {
     const named = { ...options, candidateName: "Ada Lovelace" };
     expect(ruleScore(evaluate(namedFile("AdaLovelace_Resume.pdf"), named), "resume-filename")).toBe(2);

@@ -21,13 +21,12 @@ export default function App() {
   }, []);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-8 px-6 py-12">
+    <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-8 bg-canvas px-4 py-8 text-ink sm:px-6 sm:py-12">
       <header>
-        <p className="text-sm font-medium tracking-wide text-slate-600">VerveCV</p>
-        <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">Make every bullet count.</h1>
-        <p className="mt-4 max-w-2xl text-lg leading-8 text-slate-700">
-          Upload a PDF or DOCX resume. After the server verifies the file, the dashboard shows a provisional score.
-          Withheld criteria stay out of the denominator, and the score is not rescaled to 100.
+        <p className="text-sm font-medium tracking-wide text-primary">VerveCV</p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-ink sm:text-4xl">Make every bullet count.</h1>
+        <p className="mt-4 max-w-2xl text-base leading-7 text-muted sm:text-lg sm:leading-8">
+          Upload a PDF or DOCX resume. After the server verifies the file, the dashboard shows the checks that are ready.
         </p>
       </header>
       <div className="grid min-w-0 gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">

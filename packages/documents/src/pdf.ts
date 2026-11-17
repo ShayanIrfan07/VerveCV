@@ -2,7 +2,7 @@ import type { BoundingBox } from "@vervecv/evaluation";
 import { DocumentAbortError, DocumentParseError, withTimeout } from "./errors.js";
 import { matchesMagic } from "./magic.js";
 import { toResumeDocument, type DocumentMeta, type SourceBlock } from "./model.js";
-import type { PdfjsModule, PdfjsTextItem } from "./pdf-types.js";
+import type { PdfjsAnnotation, PdfjsModule, PdfjsPage, PdfjsTextItem } from "./pdf-types.js";
 
 export interface PdfLimits {
   pageCap: number | null;
@@ -46,6 +46,7 @@ export async function extractPdf(bytes: Uint8Array, meta: DocumentMeta, limits: 
           throw new DocumentParseError("PDF_PAGE_LIMIT");
         }
         const blocks: SourceBlock[] = [];
+        const links: string[] = [];
         const pages: { page: number; width: number; height: number }[] = [];
         for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
           if (signal.aborted) {
@@ -56,9 +57,10 @@ export async function extractPdf(bytes: Uint8Array, meta: DocumentMeta, limits: 
           pages.push({ page: pageNumber, width: viewport.width, height: viewport.height });
           const content = await page.getTextContent();
           blocks.push(...linesToBlocks(pageNumber, content.items));
+          links.push(...(await annotationLinks(page)));
         }
         const document = toResumeDocument(
-          { ...meta, metadata: { ...meta.metadata, pages } },
+          { ...meta, metadata: { ...meta.metadata, pages, hyperlinks: links } },
           blocks,
         );
         if (document.blocks.every((block) => block.text.trim().length === 0)) {
@@ -104,6 +106,25 @@ async function loadPdfjs(): Promise<PdfjsModule> {
     nodeSetup.configureNodePdfWorker(pdfjs);
   }
   return pdfjs;
+}
+
+async function annotationLinks(page: PdfjsPage): Promise<string[]> {
+  const annotations = await page.getAnnotations();
+  const links: string[] = [];
+  for (const annotation of annotations) {
+    if (!isLinkAnnotation(annotation)) {
+      continue;
+    }
+    const target = annotation.url || annotation.unsafeUrl || "";
+    if (/^https?:\/\//iu.test(target)) {
+      links.push(target);
+    }
+  }
+  return links;
+}
+
+function isLinkAnnotation(value: PdfjsAnnotation): boolean {
+  return value.subtype === "Link" || typeof value.url === "string" || typeof value.unsafeUrl === "string";
 }
 
 function linesToBlocks(pageNumber: number, items: unknown[]): SourceBlock[] {

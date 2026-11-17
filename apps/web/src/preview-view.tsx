@@ -295,7 +295,7 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
 
   return (
     <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
-      <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="min-w-0 rounded-2xl border border-line bg-card p-4">
         {docx || !fileBytes ? (
           <DocxPreview
             activeBlockId={activeBlockId}
@@ -312,8 +312,8 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
           />
         )}
       </div>
-      <aside className="rounded-2xl border border-slate-200 bg-white p-4">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+      <aside className="rounded-2xl border border-line bg-card p-4 text-ink">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
           Extracted text
         </h2>
         <div className="mt-4 space-y-5">
@@ -338,7 +338,7 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
                     type="button"
                   >
                     {block.type === "bullet" ? (
-                      <span aria-hidden="true" className="mr-2 text-slate-400">
+                      <span aria-hidden="true" className="mr-2 text-muted">
                         •
                       </span>
                     ) : null}
@@ -350,7 +350,7 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
           ))}
         </div>
         {activeBlock ? (
-          <p className="mt-4 text-xs text-slate-500" data-testid="utf16-offset-caption">
+          <p className="mt-4 text-xs text-muted" data-testid="utf16-offset-caption">
             {activeSpan
               ? `UTF-16 span ${activeSpan.startOffset}–${activeSpan.endOffset} in ${activeBlock.id}`
               : `UTF-16 offsets ${activeBlock.startOffset}–${activeBlock.endOffset}`}
@@ -362,14 +362,14 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
 }
 
 function extractedBlockClass(type: string, quietSelection: boolean): string {
-  const selection = quietSelection ? "border-l-2 border-slate-300 pl-2" : "";
+  const selection = quietSelection ? "border-l-2 border-primary-muted pl-2" : "";
   if (type === "heading") {
-    return `block w-full whitespace-pre-wrap break-words py-1 text-left text-base font-semibold leading-6 text-slate-950 ${selection}`;
+    return `block w-full whitespace-pre-wrap break-words py-1 text-left text-base font-semibold leading-6 text-ink ${selection}`;
   }
   if (type === "bullet") {
-    return `block w-full whitespace-pre-wrap break-words py-0.5 pl-1 text-left text-sm leading-6 text-slate-800 ${selection}`;
+    return `block w-full whitespace-pre-wrap break-words py-0.5 pl-1 text-left text-sm leading-6 text-ink ${selection}`;
   }
-  return `block w-full whitespace-pre-wrap break-words py-0.5 text-left text-sm leading-6 text-slate-800 ${selection}`;
+  return `block w-full whitespace-pre-wrap break-words py-0.5 text-left text-sm leading-6 text-ink ${selection}`;
 }
 
 export function EvidenceText({
@@ -402,8 +402,8 @@ export function EvidenceText({
                 <mark
                   className={
                     chunk.depth > 1
-                      ? "bg-amber-200/70 text-inherit underline decoration-amber-700 decoration-2 underline-offset-2"
-                      : "bg-amber-100/60 text-inherit underline decoration-amber-600/80 underline-offset-2"
+                      ? "bg-primary/40 text-inherit underline decoration-primary-bright decoration-2 underline-offset-2"
+                      : "bg-primary/25 text-inherit underline decoration-primary-muted underline-offset-2"
                   }
                   data-evidence-depth={chunk.depth}
                   data-testid="utf16-highlight-mark"
@@ -437,7 +437,7 @@ function DocxPreview({
       {document.sections.map((section) => (
         <section key={section.id}>
           {section.heading ? (
-            <h3 className="text-base font-semibold text-slate-950">{section.heading}</h3>
+            <h3 className="text-base font-semibold text-ink">{section.heading}</h3>
           ) : null}
           {section.blockIds.map((blockId) => {
             const block = document.blocks.find((item) => item.id === blockId);
@@ -450,11 +450,11 @@ function DocxPreview({
               <p
                 className={`mt-2 whitespace-pre-wrap break-words leading-7 ${
                   block.type === "heading"
-                    ? "text-base font-semibold text-slate-950"
+                    ? "text-base font-semibold text-ink"
                     : block.type === "bullet"
-                      ? "pl-4 text-sm text-slate-800"
-                      : "text-sm text-slate-800"
-                } ${isTarget && !spanForBlock ? "border-l-2 border-slate-300 pl-3" : ""}`}
+                      ? "pl-4 text-sm text-ink"
+                      : "text-sm text-ink"
+                } ${isTarget && !spanForBlock ? "border-l-2 border-primary-muted pl-3" : ""}`}
                 data-paragraph-id={block.paragraphId ?? block.id}
                 key={block.id}
                 onClick={() => onSelect(block.id)}
@@ -487,7 +487,7 @@ function PdfPreview({
     <div className="grid gap-4">
       {usedTextFallback ? (
         <p
-          className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950"
+          className="rounded-lg border border-line bg-panel px-3 py-2 text-xs text-muted"
           data-testid="pdf-position-fallback"
         >
           Exact PDF coordinates are unavailable for this finding; highlighted in the extracted text panel.
@@ -555,7 +555,7 @@ function PdfPage({
       <canvas className="absolute inset-0 h-full w-full" ref={setCanvas} />
       {boxes.map((box, index) => (
         <span
-          className="pointer-events-none absolute border-b-2 border-amber-700/80 bg-amber-200/15"
+          className="pointer-events-none absolute border-b-2 border-primary/80 bg-primary/15"
           data-precision={box.precision}
           data-testid="pdf-highlight-box"
           key={`${box.x}-${box.y}-${index}`}

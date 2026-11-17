@@ -114,12 +114,13 @@ export async function registerUploadRoutes(
           abortController.abort();
         }
       };
-      request.raw.on("aborted", onAborted);
-      request.raw.on("close", () => {
+      const onResponseClosed = (): void => {
         if (!reply.raw.writableEnded) {
           abortController.abort();
         }
-      });
+      };
+      request.raw.on("aborted", onAborted);
+      reply.raw.on("close", onResponseClosed);
 
       try {
         const user = await requireUser(deps.db, request);
@@ -147,6 +148,7 @@ export async function registerUploadRoutes(
         return sendUploadError(error, reply, request.id);
       } finally {
         request.raw.off("aborted", onAborted);
+        reply.raw.off("close", onResponseClosed);
       }
     },
   );

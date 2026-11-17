@@ -225,6 +225,7 @@ export function grammarAndSpellingRule(
 
   const ignoredSet = buildIgnoredSet(options.ignoredTerms);
   const candidateTokens = buildCandidateNameSet(options.candidateName);
+  const properNouns = documentProperNouns(document);
   const sectionsById = new Map<string, ResumeSection>(
     document.sections.map((section) => [section.id, section]),
   );
@@ -248,6 +249,7 @@ export function grammarAndSpellingRule(
         checker,
         ignoredSet,
         candidateTokens,
+        properNouns,
         claimedSpans,
         rawDetections,
       );
@@ -605,12 +607,35 @@ function collectGrammarDetections(
   }
 }
 
+function documentProperNouns(document: ResumeDocument): ReadonlySet<string> {
+  const names = new Set<string>();
+  const tokenPattern = /[A-Za-z]+(?:-[A-Za-z]+)*(?:['’][A-Za-z]+)*/gu;
+  for (const block of document.blocks) {
+    for (const match of block.text.matchAll(tokenPattern)) {
+      const rawToken = match[0];
+      if (rawToken.length <= 1) {
+        continue;
+      }
+      const styled = /[A-Z]/u.test(rawToken.slice(1)) || /^[A-Z][a-z]/u.test(rawToken);
+      if (!styled) {
+        continue;
+      }
+      const normalized = normalizeTermKey(rawToken);
+      if (!COMMON_MISSPELLINGS.has(normalized)) {
+        names.add(normalized);
+      }
+    }
+  }
+  return names;
+}
+
 function collectSpellingDetections(
   block: ResumeBlock,
   section: ResumeSection | undefined,
   checker: SpellChecker,
   ignoredSet: ReadonlySet<string>,
   candidateTokens: ReadonlySet<string>,
+  properNouns: ReadonlySet<string>,
   claimedSpans: OffsetSpan[],
   out: RawDetection[],
 ): void {
@@ -647,7 +672,7 @@ function collectSpellingDetections(
     }
 
     // Never penalize the candidate's own name or technical vocabulary
-    if (candidateTokens.has(normalized) || isTechnicalTerm(rawToken)) {
+    if (candidateTokens.has(normalized) || properNouns.has(normalized) || isTechnicalTerm(rawToken)) {
       continue;
     }
 

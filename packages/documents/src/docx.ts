@@ -67,7 +67,10 @@ export async function extractDocx(
     const payload = limits ? repackage(pack.files) : bytes;
     const blocks = await readParagraphs(payload);
     checkAborted();
-    const document = toResumeDocument(meta, blocks);
+    const document = toResumeDocument(
+      { ...meta, metadata: { ...meta.metadata, hyperlinks: docxHyperlinks(pack.files) } },
+      blocks,
+    );
     if (document.blocks.length === 0) {
       throw new DocumentParseError("NO_EXTRACTABLE_TEXT");
     }
@@ -180,6 +183,34 @@ function copyShared(style: Record<string, unknown>, key: string, values: (boolea
   } else if (values.every((value) => value === false)) {
     style[key] = false;
   }
+}
+
+function docxHyperlinks(files: Map<string, Uint8Array>): string[] {
+  const documentXml = files.get("word/document.xml");
+  const relsXml = files.get("word/_rels/document.xml.rels");
+  if (!documentXml || !relsXml) {
+    return [];
+  }
+  const documentText = new TextDecoder().decode(documentXml);
+  const relsText = new TextDecoder().decode(relsXml);
+  const targets = new Map<string, string>();
+  for (const match of relsText.matchAll(/<Relationship\b([^>]*)\/>/giu)) {
+    const attributes = match[1] ?? "";
+    const id = /(?:^|\s)Id="([^"]+)"/u.exec(attributes)?.[1];
+    const target = /(?:^|\s)Target="([^"]+)"/u.exec(attributes)?.[1];
+    const type = /(?:^|\s)Type="([^"]+)"/u.exec(attributes)?.[1] ?? "";
+    if (id && target && /hyperlink/iu.test(type) && /^https?:\/\//iu.test(target)) {
+      targets.set(id, target);
+    }
+  }
+  const links: string[] = [];
+  for (const match of documentText.matchAll(/<w:hyperlink\b[^>]*\br:id="([^"]+)"/giu)) {
+    const target = targets.get(match[1] ?? "");
+    if (target) {
+      links.push(target);
+    }
+  }
+  return links;
 }
 
 async function loadMammoth(): Promise<MammothApi> {
