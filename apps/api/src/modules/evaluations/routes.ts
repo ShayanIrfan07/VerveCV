@@ -69,12 +69,13 @@ export async function registerEvaluationRoutes(
         abortController.abort();
       }
     };
-    request.raw.on("aborted", onAborted);
-    request.raw.on("close", () => {
+    const onResponseClosed = (): void => {
       if (!reply.raw.writableEnded) {
         abortController.abort();
       }
-    });
+    };
+    request.raw.on("aborted", onAborted);
+    reply.raw.on("close", onResponseClosed);
 
     try {
       const user = await requireUser(deps.db, request);
@@ -98,6 +99,7 @@ export async function registerEvaluationRoutes(
       return sendEvaluationError(error, reply, request.id);
     } finally {
       request.raw.off("aborted", onAborted);
+      reply.raw.off("close", onResponseClosed);
     }
   });
 

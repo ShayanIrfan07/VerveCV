@@ -70,7 +70,7 @@ function wrapWithTechnicalAllowlist(engine: NSpellInstance): SpellChecker {
         return true;
       }
     }
-    return false;
+    return isProductiveDictionaryVariant(trimmed, (part) => engine.correct(part));
   };
 
   return {
@@ -78,6 +78,73 @@ function wrapWithTechnicalAllowlist(engine: NSpellInstance): SpellChecker {
       return checkSingle(word);
     },
   };
+}
+
+const CLOSED_COMPOUND_PARTICLES = new Set(["back", "in", "off", "on", "out", "over", "up"]);
+
+function isProductiveDictionaryVariant(token: string, rawCorrect: (word: string) => boolean): boolean {
+  const word = token.toLowerCase();
+  if (COMMON_MISSPELLINGS.has(word)) {
+    return false;
+  }
+  if (/^un[a-z]{5,}$/u.test(word) && rawCorrect(word.slice(2))) {
+    return true;
+  }
+  if (/^[a-z]{4,}ic$/u.test(word) && rawCorrect(word.slice(0, -2))) {
+    return true;
+  }
+  if (acceptsAbleFormation(word, rawCorrect) || acceptsAbilityFormation(word, rawCorrect)) {
+    return true;
+  }
+  if (word.startsWith("re") && word.length > 6) {
+    const rest = word.slice(2);
+    if (rawCorrect(rest) || acceptsAbleFormation(rest, rawCorrect) || acceptsAbilityFormation(rest, rawCorrect)) {
+      return true;
+    }
+  }
+  for (const prefix of ["back", "off", "out", "over", "up"]) {
+    if (!word.startsWith(prefix) || word.length <= prefix.length + 3) {
+      continue;
+    }
+    const rest = word.slice(prefix.length);
+    if (rest.length >= 4 && rawCorrect(rest) && !COMMON_MISSPELLINGS.has(rest)) {
+      return true;
+    }
+  }
+  const singular = word.endsWith("s") && !word.endsWith("ss") ? word.slice(0, -1) : word;
+  for (const particle of CLOSED_COMPOUND_PARTICLES) {
+    if (!singular.endsWith(particle) || singular.length <= particle.length + 2) {
+      continue;
+    }
+    const head = singular.slice(0, -particle.length);
+    if (rawCorrect(head)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function acceptsAbleFormation(word: string, rawCorrect: (word: string) => boolean): boolean {
+  if (!word.endsWith("able") || word.length < 8) {
+    return false;
+  }
+  const stem = word.slice(0, -4);
+  if (stem.length < 4 || COMMON_MISSPELLINGS.has(stem)) {
+    return false;
+  }
+  const restored = stem.endsWith("e") ? stem : `${stem}e`;
+  if (COMMON_MISSPELLINGS.has(restored)) {
+    return false;
+  }
+  return rawCorrect(stem) || rawCorrect(restored);
+}
+
+function acceptsAbilityFormation(word: string, rawCorrect: (word: string) => boolean): boolean {
+  if (!word.endsWith("ability")) {
+    return false;
+  }
+  const ableForm = `${word.slice(0, -7)}able`;
+  return rawCorrect(ableForm) || acceptsAbleFormation(ableForm, rawCorrect);
 }
 
 let cachedDefaultChecker: SpellChecker | null | undefined;

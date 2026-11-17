@@ -456,7 +456,7 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
     await flushAsync();
 
     expect(container.textContent).toContain('Possible misspelling "Recieve".');
-    expect(container.textContent).toContain("5 of 44");
+    expect(container.textContent).toContain("5/44");
 
     // Hover finding to activate UTF-16 highlight
     const findingBtn = Array.from(container.querySelectorAll("button")).find((btn) =>
@@ -681,7 +681,7 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
     });
     await flushAsync();
 
-    expect(container.textContent).toContain("7 of 44");
+    expect(container.textContent).toContain("7/44");
     expect(container.textContent).toContain("Historical bullet with recieve typo");
     expect(container.textContent).not.toContain("Current local bullet");
 
@@ -707,7 +707,7 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
     });
     await flushAsync();
 
-    expect(container.textContent).toContain("3 of 44");
+    expect(container.textContent).toContain("3/44");
     expect(
       container.querySelector('[data-testid="preview-unavailable-notice"]')?.textContent,
     ).toContain("Original resume file is unavailable for preview");

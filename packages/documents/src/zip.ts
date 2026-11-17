@@ -19,7 +19,13 @@ interface ZipEntry {
   localOffset: number;
 }
 
-const ALLOWED = new Set(["[Content_Types].xml", "word/document.xml", "word/styles.xml", "word/numbering.xml"]);
+const ALLOWED = new Set([
+  "[Content_Types].xml",
+  "word/document.xml",
+  "word/_rels/document.xml.rels",
+  "word/styles.xml",
+  "word/numbering.xml",
+]);
 
 export interface DocxPackage {
   files: Map<string, Uint8Array>;

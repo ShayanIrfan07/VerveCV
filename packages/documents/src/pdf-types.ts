@@ -9,6 +9,13 @@ export interface PdfjsTextItem {
 export interface PdfjsPage {
   getViewport(params: { scale: number }): { width: number; height: number };
   getTextContent(): Promise<{ items: unknown[] }>;
+  getAnnotations(): Promise<PdfjsAnnotation[]>;
+}
+
+export interface PdfjsAnnotation {
+  subtype?: string;
+  url?: string;
+  unsafeUrl?: string;
 }
 
 export interface PdfjsDocument {

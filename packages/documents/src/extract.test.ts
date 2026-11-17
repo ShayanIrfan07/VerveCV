@@ -3,7 +3,15 @@ import { DocumentParseError, withTimeout } from "./errors.js";
 import { extractDocx } from "./docx.js";
 import { extractPdf } from "./pdf.js";
 import { classifyHeading } from "./headings.js";
-import { corruptPdfBytes, emptyPdfBytes, encryptedDocxBytes, sampleDocxBytes, samplePdfBytes } from "./samples.js";
+import {
+  corruptPdfBytes,
+  emptyPdfBytes,
+  encryptedDocxBytes,
+  linkedLabelDocxBytes,
+  linkedLabelPdfBytes,
+  sampleDocxBytes,
+  samplePdfBytes,
+} from "./samples.js";
 import { readDocxPackage } from "./zip.js";
 import { createDeflateZip } from "./zip-node.js";
 import { createStoredZip } from "./zip-write.js";
@@ -31,6 +39,24 @@ describe("document extraction", () => {
     expect(document.metadata["nonTextContentRead"]).toBe(false);
     const pages = document.metadata["pages"] as { page: number }[];
     expect(pages).toHaveLength(1);
+  });
+
+  it("keeps an embedded PDF or DOCX hyperlink when the visible text is only a label", async () => {
+    const pdf = await extractPdf(linkedLabelPdfBytes(), meta, { pageCap: 5, timeoutMs: 10_000 });
+    expect(pdf.blocks.map((block) => block.text)).toContain("LinkedIn");
+    expect(pdf.metadata["hyperlinks"]).toEqual(["https://www.linkedin.com/in/mina-kapoor"]);
+
+    const docx = await extractDocx(
+      linkedLabelDocxBytes(),
+      {
+        ...meta,
+        filename: "Label.docx",
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      },
+      { entryCap: 10, uncompressedBytes: 100_000, timeoutMs: 10_000 },
+    );
+    expect(docx.blocks.map((block) => block.text)).toContain("LinkedIn");
+    expect(docx.metadata["hyperlinks"]).toEqual(["https://www.linkedin.com/in/mina-kapoor"]);
   });
 
   it("rejects an image-only PDF, a corrupt PDF, and a page cap", async () => {

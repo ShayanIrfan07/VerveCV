@@ -2,6 +2,7 @@ import { sampleDocxBytes, samplePdfBytes, type ResumeDocument } from "@vervecv/d
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest, type SessionUser } from "./api";
 import { PreviewView } from "./preview-view";
+import { card, field, primaryButton, secondaryButton } from "./ui";
 import {
   HistoryList,
   ScorePanel,
@@ -455,11 +456,11 @@ export function UploadPanel({
 
   return (
     <section className="grid min-w-0 gap-4">
-      <div className="rounded-2xl border border-slate-200 bg-white p-5">
-        <h2 className="text-lg font-semibold text-slate-950">Resume</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-700">{status}</p>
+      <div className={card}>
+        <h2 className="text-lg font-semibold text-ink">Resume</h2>
+        <p className="mt-2 text-sm leading-6 text-muted">{status}</p>
         <div className="mt-4 flex flex-wrap gap-2">
-          <label className="rounded-lg bg-slate-950 px-3 py-2 text-sm text-white">
+          <label className={primaryButton}>
             Choose file
             <input
               accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -473,14 +474,14 @@ export function UploadPanel({
             />
           </label>
           <button
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            className={secondaryButton}
             onClick={() => void openBytes("Sample_Resume.pdf", PDF_MIME, samplePdfBytes())}
             type="button"
           >
             Preview sample PDF
           </button>
           <button
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            className={secondaryButton}
             onClick={() => void openBytes("Sample_Resume.docx", DOCX_MIME, sampleDocxBytes())}
             type="button"
           >
@@ -491,17 +492,17 @@ export function UploadPanel({
 
       {versionId ? (
         <form
-          className="rounded-2xl border border-slate-200 bg-white p-5"
+          className={card}
           onSubmit={(event) => {
             event.preventDefault();
             void scoreResume();
           }}
         >
-          <h2 className="text-lg font-semibold text-slate-950">Official score</h2>
-          <label className="mt-3 block text-sm text-slate-700">
+          <h2 className="text-lg font-semibold text-ink">Official score</h2>
+          <label className="mt-3 block text-sm text-muted">
             Candidate type
             <select
-              className="mt-1 block rounded-lg border border-slate-300 px-3 py-2"
+              className={field}
               onChange={(event) =>
                 setCandidateType(
                   event.target.value === "EXPERIENCED" ? "EXPERIENCED" : "FRESHER",
@@ -513,16 +514,17 @@ export function UploadPanel({
               <option value="EXPERIENCED">Experienced</option>
             </select>
           </label>
-          <label className="mt-3 block text-sm text-slate-700">
+          <label className="mt-3 block text-sm text-muted">
             Job description
             <textarea
-              className="mt-1 block w-full rounded-lg border border-slate-300 px-3 py-2"
+              className={field}
+              placeholder="Optional. It is not compared yet."
               onChange={(event) => setJobDescription(event.target.value)}
               value={jobDescription}
             />
           </label>
           <button
-            className="mt-3 rounded-lg bg-slate-950 px-3 py-2 text-sm text-white"
+            className={`mt-3 ${primaryButton}`}
             type="submit"
           >
             Score verified resume
@@ -536,6 +538,9 @@ export function UploadPanel({
           evaluation={evaluation}
           findings={findings}
           onHighlight={setHighlight}
+          onPreview={() => {
+            document.getElementById("resume-preview")?.scrollIntoView({ block: "nearest" });
+          }}
           previewUnavailableReason={previewUnavailableReason}
         />
       ) : null}
@@ -555,11 +560,13 @@ export function UploadPanel({
       ) : null}
 
       {visiblePreview ? (
+        <div id="resume-preview">
         <PreviewView
           document={visiblePreview.document}
           fileBytes={visiblePreview.bytes}
           highlight={highlight}
         />
+        </div>
       ) : null}
     </section>
   );

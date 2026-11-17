@@ -1,1 +1,26 @@
 @import "tailwindcss";
+
+@theme {
+  --color-canvas: #050505;
+  --color-card: #0d0d12;
+  --color-panel: #15121f;
+  --color-primary: #a855f7;
+  --color-primary-bright: #c084fc;
+  --color-primary-muted: #8b5cf6;
+  --color-ink: #f5f3ff;
+  --color-muted: #a1a1aa;
+  --color-line: #292333;
+  --color-danger: #f87171;
+}
+
+html,
+body,
+#root {
+  background: #050505;
+  color: #f5f3ff;
+}
+
+select option {
+  background: #15121f;
+  color: #f5f3ff;
+}

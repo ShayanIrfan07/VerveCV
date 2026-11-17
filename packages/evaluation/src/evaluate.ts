@@ -1,4 +1,5 @@
 import { uniqueSkillScore } from "./bands.js";
+import { isTechnicalTerm } from "./technical-terms.js";
 import { grammarAndSpellingRule, punctuationRule, type SpellChecker } from "./grammar.js";
 import type {
   EvaluationFinding,
@@ -80,7 +81,7 @@ const WITHHELD_RULES: Array<[string, number, RuleWithholdReasonCode]> = [
 export function evaluate(document: ResumeDocument, options: EvaluationOptions): EvaluationResult {
   const criteria = [
     ...bulletCriteria(document),
-    filenameRule(document, options.candidateName),
+    filenameRule(document, options.candidateName, detectCandidateName(document)),
     grammarAndSpellingRule(document, {
       candidateName: options.candidateName,
       ignoredTerms: options.ignoredTerms,
@@ -89,7 +90,7 @@ export function evaluate(document: ResumeDocument, options: EvaluationOptions): 
     punctuationRule(document),
     ...WITHHELD_RULES.map(([ruleId, maxScore, reasonCode]) => withheld(ruleId, maxScore, reasonCode)),
     requiredSections(document, options.candidateType),
-    contactInformation(document, options.candidateName),
+    contactInformation(document, options.candidateName, detectCandidateName(document)),
     uniqueSkills(document),
   ];
   const aggregated = aggregate(criteria, unevaluatedPenalties());
@@ -171,16 +172,23 @@ function requiredSections(document: ResumeDocument, candidateType: CandidateType
   return scored("required-sections", maxScore, present ? maxScore : 0, []);
 }
 
-function contactInformation(document: ResumeDocument, candidateName: string | null): RuleResult {
-  const text = contactBlocks(document).map((block) => block.text).join("\n");
+function contactInformation(
+  document: ResumeDocument,
+  candidateName: string | null,
+  detectedName: string | null,
+): RuleResult {
+  const blocks = contactBlocks(document);
+  const text = blocks.map((block) => block.text).join("\n");
+  const links = hyperlinks(document);
   let points = 0;
   const findings: EvaluationFinding[] = [];
-  if (hasName(document, candidateName)) {
+  if (detectedName !== null || hasSuppliedName(blocks, candidateName)) {
     points += 1;
   } else {
     findings.push(findingFor("contact-name", "relevantInformation", "A candidate name was not found."));
   }
-  if (PHONE.test(text) && digitCount(text.match(PHONE)?.[0] ?? "") >= 7) {
+  const phone = text.match(PHONE)?.[0] ?? "";
+  if (PHONE.test(text) && digitCount(phone) >= 7) {
     points += 1;
   } else {
     findings.push(findingFor("contact-phone", "relevantInformation", "A phone number was not found."));
@@ -190,7 +198,7 @@ function contactInformation(document: ResumeDocument, candidateName: string | nu
   } else {
     findings.push(findingFor("contact-email", "relevantInformation", "An email address was not found."));
   }
-  if (LINKEDIN.test(text)) {
+  if (hasLinkedInProfile(text) || links.some((link) => hasLinkedInProfile(link))) {
     points += 1;
   } else {
     findings.push(findingFor("contact-linkedin", "relevantInformation", "A LinkedIn profile URL was not found."));
@@ -218,25 +226,33 @@ function uniqueSkills(document: ResumeDocument): RuleResult {
   return scored("unique-skills", CRITERION_MAXIMA.uniqueSkills, points, []);
 }
 
-function filenameRule(document: ResumeDocument, candidateName: string | null): RuleResult {
+function filenameRule(
+  document: ResumeDocument,
+  candidateName: string | null,
+  detectedName: string | null,
+): RuleResult {
   const maxScore = CRITERION_MAXIMA.filename;
-  const tokens = nameTokens(candidateName);
+  const tokens = nameTokens(detectedName ?? candidateName);
   if (tokens.length === 0) {
     return withheld("resume-filename", maxScore, "OPEN_DECISION");
   }
   const stem = filenameStem(document.filename);
-  const parts = stem.toLowerCase().split(/[^a-z]+/u).filter((part) => part.length > 0);
-  const present = tokens.filter((token) => parts.includes(token) || parts.join("").includes(tokens.join("")));
-  if (present.length === 0) {
+  const parts = filenameNameParts(stem);
+  if (!filenameContainsName(parts, tokens)) {
     return scored("resume-filename", maxScore, 0, [
       findingFor("resume-filename", "formatting", "The filename does not contain the candidate name."),
     ]);
   }
-  const pattern = /^[A-Za-z]+_Resume$/iu.test(stem) || /^Resume_[A-Za-z]+$/iu.test(stem) || /^[A-Za-z]+_[A-Za-z]+$/iu.test(stem);
-  if (pattern && tokens.every((token) => parts.includes(token) || parts.join("").includes(tokens.join("")))) {
+  if (approvedFilenamePattern(stem, tokens)) {
     return scored("resume-filename", maxScore, maxScore, []);
   }
-  return withheld("resume-filename", maxScore, "UNRESOLVED_BAND");
+  return withheld("resume-filename", maxScore, "UNRESOLVED_BAND", [
+    findingFor(
+      "resume-filename",
+      "formatting",
+      "The filename contains the candidate name, but it does not match an approved pattern, so these points are not available.",
+    ),
+  ]);
 }
 
 function eligibleBullets(document: ResumeDocument): ResumeBlock[] {
@@ -260,15 +276,112 @@ function contactBlocks(document: ResumeDocument): ResumeBlock[] {
   });
 }
 
-function hasName(document: ResumeDocument, candidateName: string | null): boolean {
-  const blocks = contactBlocks(document);
+function hasSuppliedName(blocks: ResumeBlock[], candidateName: string | null): boolean {
   const tokens = nameTokens(candidateName);
-  if (tokens.length > 0) {
-    const haystack = blocks.map((block) => block.text.toLowerCase()).join("\n");
-    return tokens.every((token) => new RegExp(`\\b${token}\\b`, "u").test(haystack));
+  if (tokens.length === 0) {
+    return false;
   }
-  const first = blocks.find((block) => block.text.trim().length > 0);
-  return first !== undefined && /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$/u.test(first.text.trim());
+  const haystack = blocks.map((block) => block.text.toLowerCase()).join("\n");
+  return tokens.every((token) => new RegExp(`\\b${escapeRegExp(token)}\\b`, "u").test(haystack));
+}
+
+const NAME_STOPWORDS = new Set([
+  "college",
+  "curriculum",
+  "developer",
+  "education",
+  "email",
+  "engineer",
+  "experience",
+  "github",
+  "intern",
+  "junior",
+  "linkedin",
+  "manager",
+  "phone",
+  "professional",
+  "profile",
+  "projects",
+  "resume",
+  "senior",
+  "skills",
+  "software",
+  "student",
+  "summary",
+  "university",
+  "vitae",
+]);
+
+function detectCandidateName(document: ResumeDocument): string | null {
+  const blocks = contactBlocks(document).filter((block) => block.text.trim().length > 0);
+  for (let index = 0; index < Math.min(blocks.length, 6); index += 1) {
+    const block = blocks[index];
+    if (!block) {
+      continue;
+    }
+    const joined = joinSplitName(block, blocks[index + 1]);
+    const detected = nameFromLine(joined, lineHasContact(joined) || lineHasContact(blocks[index + 1]?.text ?? ""));
+    if (detected) {
+      return detected;
+    }
+  }
+  return null;
+}
+
+function joinSplitName(current: ResumeBlock, next: ResumeBlock | undefined): string {
+  if (!next || !singleNameToken(current.text) || !singleNameToken(next.text)) {
+    return current.text;
+  }
+  if (!verticallyAligned(current, next)) {
+    return current.text;
+  }
+  return `${current.text.trim()} ${next.text.trim()}`;
+}
+
+function singleNameToken(value: string): boolean {
+  return nameTokensFromLine(value).length === 1 && !NAME_STOPWORDS.has(nameTokensFromLine(value)[0]?.toLowerCase() ?? "");
+}
+
+function verticallyAligned(current: ResumeBlock, next: ResumeBlock): boolean {
+  const left = current.boxes?.[0];
+  const right = next.boxes?.[0];
+  if (!left || !right) {
+    return current.page === undefined || next.page === undefined || current.page === next.page;
+  }
+  return left.page === right.page && Math.abs(left.y - right.y) <= 4;
+}
+
+function nameFromLine(value: string, allowLowercase: boolean): string | null {
+  const tokens = nameTokensFromLine(value);
+  if (tokens.length < 2 || tokens.length > 4) {
+    return null;
+  }
+  if (tokens.some((token) => NAME_STOPWORDS.has(token.toLowerCase()))) {
+    return null;
+  }
+  const capitalized = tokens.every((token) => /^[\p{Lu}][\p{Ll}'’-]+$/u.test(token));
+  const allCaps = tokens.every((token) => /^[\p{Lu}]{2,}$/u.test(token));
+  const lowercase = tokens.every((token) => /^[\p{Ll}][\p{Ll}'’-]+$/u.test(token));
+  if (capitalized || allCaps || (allowLowercase && lowercase)) {
+    return tokens.join(" ");
+  }
+  return null;
+}
+
+function nameTokensFromLine(value: string): string[] {
+  const normalized = value.normalize("NFKC").replace(/\p{Z}+/gu, " ").trim().split(/\n/u)[0] ?? "";
+  const leading = normalized.split(/\s*(?:\||•|●|·)\s*|\s{2,}/u)[0] ?? normalized;
+  const withoutContact =
+    leading.split(/\s+(?=\S+@|\+?\d[\d\s().-]{6,}|(?:https?:\/\/)?(?:www\.)?(?:linkedin|github)\.)/iu)[0] ?? leading;
+  return withoutContact
+    .split(/\s+/u)
+    .flatMap((token) => (isTechnicalTerm(token) ? [token] : token.split(/(?<=\p{Ll})(?=\p{Lu})/u)))
+    .map((token) => token.replace(/^[^\p{L}]+|[^\p{L}'’-]+$/gu, ""))
+    .filter((token) => token.length > 1);
+}
+
+function lineHasContact(value: string): boolean {
+  return EMAIL.test(value) || PHONE.test(value) || /linkedin\.com|github\.com/iu.test(value);
 }
 
 function nameTokens(candidateName: string | null): string[] {
@@ -285,6 +398,48 @@ function filenameStem(filename: string): string {
   return base.replace(/\.[^.]+$/u, "");
 }
 
+const GENERIC_FILENAME_TOKENS = new Set(["cv", "curriculum", "profile", "resume", "vitae"]);
+
+function filenameNameParts(stem: string): string[] {
+  const expanded = stem.normalize("NFKC").replace(/(\p{Ll})(\p{Lu})/gu, "$1 $2");
+  return expanded
+    .toLowerCase()
+    .split(/[^a-z]+/u)
+    .filter((part) => part.length > 0 && !GENERIC_FILENAME_TOKENS.has(part));
+}
+
+function filenameContainsName(parts: string[], tokens: string[]): boolean {
+  if (tokens.length === 0) {
+    return false;
+  }
+  if (parts.some((part) => part === tokens.join(""))) {
+    return true;
+  }
+  const unused = [...parts];
+  for (const token of tokens) {
+    const index = unused.indexOf(token);
+    if (index < 0) {
+      return false;
+    }
+    unused.splice(index, 1);
+  }
+  return true;
+}
+
+function approvedFilenamePattern(stem: string, tokens: string[]): boolean {
+  if (!filenameContainsName(filenameNameParts(stem), tokens)) {
+    return false;
+  }
+  if (/^Resume_[A-Za-z]+$/iu.test(stem) || /^[A-Za-z]+_Resume$/iu.test(stem)) {
+    return true;
+  }
+  const parts = stem.split("_");
+  if (parts.length !== 2 || parts.some((part) => GENERIC_FILENAME_TOKENS.has(part.toLowerCase()))) {
+    return false;
+  }
+  return /^[A-Za-z]+_[A-Za-z]+$/iu.test(stem);
+}
+
 function splitSkills(text: string): string[] {
   return text
     .split(/[\n\t,;|•●·]|(?:\s+\/\s+)|(?:\s+-\s+)/u)
@@ -293,7 +448,7 @@ function splitSkills(text: string): string[] {
 }
 
 function normalizeSkill(skill: string): string | null {
-  if (EMAIL.test(skill) || PHONE.test(skill) || LINKEDIN.test(skill)) return null;
+  if (EMAIL.test(skill) || PHONE.test(skill) || hasLinkedInProfile(skill)) return null;
   if (/^\d+$/u.test(skill)) return null;
   const words = skill.split(/\s+/u).filter((word) => word.length > 0);
   if (words.length > 5 || /[.!?]["']?$/u.test(skill) || /\.\s+\p{L}/u.test(skill)) return null;
@@ -303,7 +458,62 @@ function normalizeSkill(skill: string): string | null {
 
 const PHONE = /(?:\+?\d[\d\s().-]{6,}\d)/u;
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu;
-const LINKEDIN = /linkedin\.com\/(?:in|pub)\/[A-Za-z0-9_-]+/iu;
+const LINKEDIN_RESERVED = new Set([
+  "about",
+  "company",
+  "companies",
+  "events",
+  "feed",
+  "groups",
+  "help",
+  "job",
+  "jobs",
+  "learning",
+  "legal",
+  "login",
+  "messaging",
+  "mwlite",
+  "notifications",
+  "posts",
+  "premium",
+  "pulse",
+  "sales",
+  "school",
+  "schools",
+  "search",
+  "signup",
+  "talent",
+]);
+
+function hyperlinks(document: ResumeDocument): string[] {
+  const value = document.metadata["hyperlinks"];
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function hasLinkedInProfile(value: string): boolean {
+  const pattern = /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/([A-Za-z0-9_-]+)(?:\/([A-Za-z0-9_%-]+))?/giu;
+  for (const match of value.matchAll(pattern)) {
+    const first = match[1]?.toLowerCase() ?? "";
+    const second = match[2] ?? "";
+    if (first === "in" || first === "pub") {
+      if (/[A-Za-z]/u.test(second) && second.length >= 2) {
+        return true;
+      }
+      continue;
+    }
+    if (!LINKEDIN_RESERVED.has(first) && first.length >= 3 && /[A-Za-z]/u.test(first) && second.length === 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
 
 function digitCount(value: string): number {
   return value.replace(/\D/gu, "").length;
@@ -316,8 +526,13 @@ function scored(ruleId: string, maxScore: number, score: number, findings: Evalu
   return { ruleId, maxScore, score, status: "scored", findings, version: RUBRIC_VERSION };
 }
 
-function withheld(ruleId: string, maxScore: number, reasonCode: RuleWithholdReasonCode): RuleResult {
-  return { ruleId, maxScore, score: null, status: "withheld", reasonCode, findings: [], version: RUBRIC_VERSION };
+function withheld(
+  ruleId: string,
+  maxScore: number,
+  reasonCode: RuleWithholdReasonCode,
+  findings: EvaluationFinding[] = [],
+): RuleResult {
+  return { ruleId, maxScore, score: null, status: "withheld", reasonCode, findings, version: RUBRIC_VERSION };
 }
 
 function findingFor(ruleId: string, category: string, message: string): EvaluationFinding {

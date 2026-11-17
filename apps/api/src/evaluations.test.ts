@@ -51,7 +51,7 @@ async function createTestApp() {
     storage,
     parseGate,
   });
-  return { app, client, pgliteDb: database, storage };
+  return { app, client, pgliteDb: database, storage, parseGate };
 }
 
 async function sessionFor(app: Awaited<ReturnType<typeof buildApp>>, email: string): Promise<string> {
@@ -107,6 +107,21 @@ async function verifiedVersion(
   });
   expect(completed.statusCode).toBe(200);
   return created;
+}
+
+function emitPrematureResponseClose(reply: NodeJS.EventEmitter | undefined): void {
+  if (!reply) {
+    throw new Error("evaluation response was not captured");
+  }
+  const listeners = reply.listeners("close");
+  reply.removeAllListeners("close");
+  for (const listener of listeners) {
+    if (String(listener).includes("writableEnded")) {
+      reply.on("close", listener as (...args: unknown[]) => void);
+    }
+  }
+  reply.emit("close");
+  reply.removeAllListeners("close");
 }
 
 describe("evaluation dashboard API", () => {
@@ -560,6 +575,79 @@ describe("evaluation dashboard API", () => {
 
     const combined = [...p1.evaluations, ...p2.evaluations].map((item) => item.id);
     expect(new Set(combined)).toEqual(new Set(ids));
+
+    await app.close();
+    await client.close();
+  });
+
+  it("keeps scoring when the incoming request closes after its body is complete, and cancels on a real disconnect", async () => {
+    const { app, client, storage, parseGate, pgliteDb } = await createTestApp();
+    let rawRequest: NodeJS.EventEmitter | undefined;
+    let rawReply: NodeJS.EventEmitter | undefined;
+    app.addHook("onRequest", async (request, reply) => {
+      if (request.method === "POST" && request.url === "/api/v1/evaluations") {
+        rawRequest = request.raw;
+        rawReply = reply.raw;
+      }
+    });
+    const owner = await sessionFor(app, "cancel@example.com");
+    const verified = await verifiedVersion(app, storage, owner, "Cancel_Resume.pdf");
+
+    const originalRun = parseGate.run.bind(parseGate);
+    function score(idempotencyKey: string) {
+      return app.inject({
+        method: "POST",
+        url: "/api/v1/evaluations",
+        headers: { origin: ORIGIN, cookie: owner },
+        payload: {
+          resumeVersionId: verified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey,
+        },
+      });
+    }
+
+    parseGate.run = ((work, options) =>
+      originalRun(async (signal) => {
+        rawRequest?.emit("close");
+        return work(signal);
+      }, options)) as typeof parseGate.run;
+    const benign = await score("eval-benign-close");
+    expect(benign.statusCode).toBe(200);
+    const benignId = benign.json<{ evaluation: { id: string; scoreStatus: string } }>().evaluation;
+    expect(benignId.scoreStatus).toBe("PROVISIONAL");
+
+    parseGate.run = ((work, options) =>
+      originalRun(async (signal) => {
+        emitPrematureResponseClose(rawReply);
+        return work(signal);
+      }, options)) as typeof parseGate.run;
+    const closed = await score("eval-response-closed");
+    expect(closed.statusCode).toBe(499);
+    expect(closed.json()).toMatchObject({ error: { code: "REQUEST_ABORTED", message: "Request was cancelled." } });
+
+    parseGate.run = ((work, options) =>
+      originalRun(async (signal) => {
+        rawRequest?.emit("aborted");
+        return work(signal);
+      }, options)) as typeof parseGate.run;
+    const aborted = await score("eval-request-aborted");
+    expect(aborted.statusCode).toBe(499);
+    expect(aborted.json()).toMatchObject({ error: { code: "REQUEST_ABORTED", message: "Request was cancelled." } });
+
+    const history = await app.inject({
+      method: "GET",
+      url: "/api/v1/evaluations",
+      headers: { cookie: owner },
+    });
+    expect(history.statusCode).toBe(200);
+    expect(history.json<{ evaluations: Array<{ id: string }> }>().evaluations.map((item) => item.id)).toEqual([
+      benignId.id,
+    ]);
+
+    const stored = await pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations);
+    expect(stored.map((row) => row.id)).toEqual([benignId.id]);
 
     await app.close();
     await client.close();

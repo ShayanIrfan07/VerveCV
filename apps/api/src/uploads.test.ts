@@ -97,6 +97,21 @@ async function sessionFor(
   return { cookie: `vervecv_session=${cookie?.value ?? ""}`, userId };
 }
 
+function emitPrematureResponseClose(reply: NodeJS.EventEmitter | undefined): void {
+  if (!reply) {
+    throw new Error("complete-upload response was not captured");
+  }
+  const listeners = reply.listeners("close");
+  reply.removeAllListeners("close");
+  for (const listener of listeners) {
+    if (String(listener).includes("writableEnded")) {
+      reply.on("close", listener as (...args: unknown[]) => void);
+    }
+  }
+  reply.emit("close");
+  reply.removeAllListeners("close");
+}
+
 describe("resume upload", () => {
   it("verifies a PDF, hides it from another user, and deletes the stored object", async () => {
     const { app, client, pgliteDb, storage } = await createTestApp();
@@ -462,6 +477,95 @@ describe("resume upload", () => {
 
     await overloaded.app.close();
     await overloaded.client.close();
+  });
+
+  it("keeps verifying when the incoming request closes after its body is complete, and cancels on a real disconnect", async () => {
+    const gate = new ParseGate(1, { maxQueue: 1, maxWaitMs: 5_000 });
+    const harness = await createTestApp({}, { parseGate: gate });
+    let rawRequest: NodeJS.EventEmitter | undefined;
+    let rawReply: NodeJS.EventEmitter | undefined;
+    harness.app.addHook("onRequest", async (request, reply) => {
+      if (request.url.includes("/complete-upload")) {
+        rawRequest = request.raw;
+        rawReply = reply.raw;
+      }
+    });
+    const { cookie } = await sessionFor(harness.app, "disconnect@example.com");
+    const bytes = samplePdfBytes();
+
+    async function intentAndStore(filename: string) {
+      const intent = await harness.app.inject({
+        method: "POST",
+        url: "/api/v1/resumes/upload-intents",
+        headers: { origin: ORIGIN, cookie },
+        payload: { filename, mimeType: PDF_MIME, sizeBytes: bytes.byteLength },
+      });
+      expect(intent.statusCode).toBe(201);
+      const created = intent.json<{ resumeId: string; versionId: string; upload: { url: string } }>();
+      await harness.storage.put(created.upload.url.replace("memory://upload/", ""), bytes);
+      return created;
+    }
+
+    const originalRun = gate.run.bind(gate);
+    const benign = await intentAndStore("Benign_Close.pdf");
+    gate.run = ((work, options) =>
+      originalRun(async (signal) => {
+        rawRequest?.emit("close");
+        return work(signal);
+      }, options)) as typeof gate.run;
+
+    const benignResult = await harness.app.inject({
+      method: "POST",
+      url: `/api/v1/resumes/${benign.resumeId}/versions/${benign.versionId}/complete-upload`,
+      headers: { origin: ORIGIN, cookie },
+      payload: {},
+    });
+    expect(benignResult.statusCode).toBe(200);
+    expect(benignResult.json()).toMatchObject({ verificationState: "verified", officialScore: null });
+
+    const responseClosed = await intentAndStore("Response_Closed.pdf");
+    gate.run = ((work, options) =>
+      originalRun(async (signal) => {
+        emitPrematureResponseClose(rawReply);
+        return work(signal);
+      }, options)) as typeof gate.run;
+    const closedResult = await harness.app.inject({
+      method: "POST",
+      url: `/api/v1/resumes/${responseClosed.resumeId}/versions/${responseClosed.versionId}/complete-upload`,
+      headers: { origin: ORIGIN, cookie },
+      payload: {},
+    });
+    expect(closedResult.statusCode).toBe(499);
+    expect(closedResult.json()).toMatchObject({ error: { code: "REQUEST_ABORTED" } });
+
+    const requestAborted = await intentAndStore("Request_Aborted.pdf");
+    gate.run = ((work, options) =>
+      originalRun(async (signal) => {
+        rawRequest?.emit("aborted");
+        return work(signal);
+      }, options)) as typeof gate.run;
+    const abortedResult = await harness.app.inject({
+      method: "POST",
+      url: `/api/v1/resumes/${requestAborted.resumeId}/versions/${requestAborted.versionId}/complete-upload`,
+      headers: { origin: ORIGIN, cookie },
+      payload: {},
+    });
+    expect(abortedResult.statusCode).toBe(499);
+    expect(abortedResult.json()).toMatchObject({ error: { code: "REQUEST_ABORTED" } });
+
+    const pending = await harness.pgliteDb
+      .select({ id: schema.resumeVersions.id, state: schema.resumeVersions.verificationState })
+      .from(schema.resumeVersions);
+    expect(pending).toEqual(
+      expect.arrayContaining([
+        { id: benign.versionId, state: "verified" },
+        { id: responseClosed.versionId, state: "pending" },
+        { id: requestAborted.versionId, state: "pending" },
+      ]),
+    );
+
+    await harness.app.close();
+    await harness.client.close();
   });
 
   it("leaves zero pending DB rows when signed URL generation fails, bounds active pending intents, and sweeps abandoned intents", async () => {
