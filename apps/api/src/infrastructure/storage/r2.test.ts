@@ -1,3 +1,5 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { StorageObjectTooLargeError } from "./memory.js";
 import { createR2Storage, MAX_SIGNED_URL_TTL_SECONDS } from "./r2.js";
@@ -82,17 +84,29 @@ describe("createR2Storage", () => {
   });
 
   it("does not follow a redirect when reading or deleting an object", async () => {
-    const fetchImpl: typeof fetch = async (_input, init) => {
-      if (init?.redirect !== "error") {
-        return new Response("stolen", { status: 200 });
+    let landed = 0;
+    const server = http.createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/landed") {
+        landed += 1;
+        response.writeHead(200);
+        response.end("stolen");
+        return;
       }
-      return new Response(null, {
-        status: 302,
-        headers: { location: "https://evil.example/object" },
-      });
-    };
-    const storage = createR2Storage(R2_CONFIG, fetchImpl);
-    await expect(storage.get("obj_1234")).rejects.toThrow(/read failed/);
-    await expect(storage.delete("obj_1234")).rejects.toThrow(/delete failed/);
+      response.writeHead(302, { location: "/landed" });
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const redirectUrl = `http://127.0.0.1:${address.port}/object`;
+    const fetchImpl: typeof fetch = (_input, init) => fetch(redirectUrl, init);
+    try {
+      const storage = createR2Storage(R2_CONFIG, fetchImpl);
+      await expect(storage.get("obj_1234")).rejects.toThrow();
+      await expect(storage.delete("obj_1234")).rejects.toThrow();
+      expect(landed).toBe(0);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
   });
 });

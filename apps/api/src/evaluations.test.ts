@@ -673,7 +673,11 @@ describe("evaluation dashboard API", () => {
           return memory.get(key, options);
         }
         return new Promise((_resolve, reject) => {
-          const abort = () => reject(new Error("aborted"));
+          const abort = () => {
+            const failure = new Error("The operation was aborted.");
+            failure.name = "AbortError";
+            reject(failure);
+          };
           if (options?.signal?.aborted) {
             abort();
             return;
@@ -704,6 +708,47 @@ describe("evaluation dashboard API", () => {
         { signal: controller.signal },
       ),
     ).rejects.toMatchObject({ statusCode: 499, code: "REQUEST_ABORTED" });
+    expect(await pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations)).toEqual([]);
+    await app.close();
+    await client.close();
+  });
+
+  it("does not label a storage read failure as request cancellation", async () => {
+    const memory = new MemoryStorage();
+    let reads = 0;
+    const storage: PutStorage = {
+      put: (key, bytes) => memory.put(key, bytes),
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: (key, options) => {
+        reads += 1;
+        if (reads === 1) {
+          return memory.get(key, options);
+        }
+        return Promise.reject(new Error("R2 connection aborted by peer"));
+      },
+    };
+    const { app, client, pgliteDb, config, parseGate, db } = await createTestApp(storage);
+    const owner = await sessionFor(app, "storage-not-cancel@example.com");
+    const verified = await verifiedVersion(app, storage, owner, "Storage_Error.pdf");
+    const user = await pgliteDb.select({ id: schema.users.id }).from(schema.users);
+    const userId = user[0]?.id;
+    if (!userId) {
+      throw new Error("missing user");
+    }
+    await expect(
+      createEvaluation(
+        { db, storage, config, parseGate },
+        userId,
+        {
+          resumeVersionId: verified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey: "storage-error",
+        },
+      ),
+    ).rejects.toThrow(/connection aborted by peer/);
     expect(await pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations)).toEqual([]);
     await app.close();
     await client.close();

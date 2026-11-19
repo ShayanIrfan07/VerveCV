@@ -347,16 +347,19 @@ export async function completeUpload(
       signal: options.signal,
     });
   } catch (error) {
-    if (options.signal?.aborted) {
-      throw new UploadError(499, "REQUEST_ABORTED", "Request was cancelled.");
-    }
     if (error instanceof StorageObjectTooLargeError) {
       await markRejectedIfPending(deps.db, version.id);
       throw new UploadError(413, "PAYLOAD_TOO_LARGE", "The file is larger than the upload limit.");
     }
+    if (storageFailureIsAbort(error)) {
+      throw new UploadError(499, "REQUEST_ABORTED", "Request was cancelled.");
+    }
     throw error;
   }
 
+  if (options.signal?.aborted) {
+    throw new UploadError(499, "REQUEST_ABORTED", "Request was cancelled.");
+  }
   if (!bytes) {
     throw new UploadError(422, "UPLOAD_INCOMPLETE", "The upload has not finished.");
   }
@@ -422,6 +425,10 @@ export async function completeUpload(
       throw new UploadError(status, error.code, error.message);
     }
     throw error;
+  }
+
+  if (options.signal?.aborted) {
+    throw new UploadError(499, "REQUEST_ABORTED", "Request was cancelled.");
   }
 
   const hash = meta.sourceHash;
@@ -768,6 +775,10 @@ export async function deleteResume(db: Database, userId: string, resumeId: strin
       });
     }
   });
+}
+
+function storageFailureIsAbort(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function verifiedBody(resumeId: string, versionId: string, parserVersion: string | null) {

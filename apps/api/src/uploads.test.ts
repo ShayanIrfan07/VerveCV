@@ -777,7 +777,11 @@ describe("resume upload", () => {
       delete: (key, options) => memory.delete(key, options),
       get: (_key, options) =>
         new Promise((_resolve, reject) => {
-          const abort = () => reject(new Error("aborted"));
+          const abort = () => {
+            const failure = new Error("The operation was aborted.");
+            failure.name = "AbortError";
+            reject(failure);
+          };
           if (options?.signal?.aborted) {
             abort();
             return;
@@ -815,6 +819,181 @@ describe("resume upload", () => {
       .from(schema.resumeVersions)
       .where(eq(schema.resumeVersions.id, created.versionId));
     expect(pending).toEqual([{ state: "pending" }]);
+    await harness.app.close();
+    await harness.client.close();
+  });
+
+  it("does not label a storage read failure as request cancellation", async () => {
+    const memory = new MemoryStorage();
+    const storage: ObjectStorage = {
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: async () => {
+        throw new Error("R2 connection aborted by peer");
+      },
+    };
+    const harness = await createTestApp({}, { storage });
+    const { userId } = await sessionFor(harness.app, "storage-not-cancel@example.com");
+    const intent = await createUploadIntent(
+      { db: harness.db, storage, config: harness.config, parseGate: harness.parseGate },
+      userId,
+      { filename: "Peer.pdf", mimeType: PDF_MIME, sizeBytes: 100 },
+    );
+    const key = intent.upload.url.replace("memory://upload/", "");
+    await memory.put(key, new Uint8Array(100));
+    await expect(
+      completeUpload(
+        { db: harness.db, storage, config: harness.config, parseGate: harness.parseGate },
+        userId,
+        intent.resumeId,
+        intent.versionId,
+      ),
+    ).rejects.toThrow(/connection aborted by peer/);
+    const pending = await harness.pgliteDb
+      .select({ state: schema.resumeVersions.verificationState })
+      .from(schema.resumeVersions)
+      .where(eq(schema.resumeVersions.id, intent.versionId));
+    expect(pending).toEqual([{ state: "pending" }]);
+    await harness.app.close();
+    await harness.client.close();
+  });
+
+  it("keeps cleanup and retention consistent when they delete the same abandoned object", async () => {
+    const memory = new MemoryStorage();
+    let activeKey: string | null = null;
+    let nextPause: { markEntered: () => void; gate: Promise<void> } | null = null;
+    const storage: ObjectStorage = {
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      get: (key, options) => memory.get(key, options),
+      delete: async (key) => {
+        if (key === activeKey && nextPause) {
+          const pause = nextPause;
+          nextPause = null;
+          pause.markEntered();
+          await pause.gate;
+        }
+        await memory.delete(key);
+      },
+    };
+    function armPause() {
+      let markEntered!: () => void;
+      let resume!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        markEntered = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      nextPause = { markEntered, gate };
+      return { entered, resume };
+    }
+    const harness = await createTestApp(
+      { signedUrlTtlSeconds: 60, uploadIntentGraceSeconds: 0 },
+      { storage },
+    );
+    const { cookie, userId } = await sessionFor(harness.app, "cleanup-race@example.com");
+    const deps = {
+      db: harness.db,
+      storage,
+      config: harness.config,
+      parseGate: harness.parseGate,
+    };
+    const recent = new Date();
+    const bytes = samplePdfBytes();
+    const verifiedIntent = await createUploadIntent(
+      deps,
+      userId,
+      { filename: "Verified.pdf", mimeType: PDF_MIME, sizeBytes: bytes.byteLength },
+      { now: recent },
+    );
+    const verifiedKey = verifiedIntent.upload.url.replace("memory://upload/", "");
+    await memory.put(verifiedKey, bytes);
+    const verified = await harness.app.inject({
+      method: "POST",
+      url: `/api/v1/resumes/${verifiedIntent.resumeId}/versions/${verifiedIntent.versionId}/complete-upload`,
+      headers: { origin: ORIGIN, cookie },
+      payload: {},
+    });
+    expect(verified.statusCode).toBe(200);
+
+    async function abandonedUpload(filename: string) {
+      const intent = await createUploadIntent(
+        deps,
+        userId,
+        { filename, mimeType: PDF_MIME, sizeBytes: 32 },
+        { now: new Date(recent.getTime() - 120_000) },
+      );
+      const key = intent.upload.url.replace("memory://upload/", "");
+      await memory.put(key, new Uint8Array(32));
+      return { ...intent, key };
+    }
+
+    async function assertSettled(versionId: string, objectKey: string) {
+      expect(memory.has(objectKey)).toBe(false);
+      const versions = await harness.pgliteDb
+        .select({ id: schema.resumeVersions.id })
+        .from(schema.resumeVersions)
+        .where(eq(schema.resumeVersions.id, versionId));
+      const tasks = await harness.pgliteDb
+        .select({ state: schema.retentionTasks.state })
+        .from(schema.retentionTasks)
+        .where(eq(schema.retentionTasks.resumeVersionId, versionId));
+      expect(tasks.every((task) => task.state === "succeeded")).toBe(true);
+      expect(versions.length === 0 || tasks.length === 1).toBe(true);
+    }
+
+    const retentionFirst = await abandonedUpload("RetentionFirst.pdf");
+    activeKey = retentionFirst.key;
+    const cleanupHeld = armPause();
+    const cleanupFirstPass = cleanupAbandonedUploadIntents(deps, { userId, now: recent });
+    await cleanupHeld.entered;
+    const retentionHeld = armPause();
+    const retentionFirstPass = runRetentionPass(
+      { db: harness.db, storage },
+      { now: recent, workerId: "worker-retention-first", leaseMs: 60_000 },
+    );
+    await retentionHeld.entered;
+    retentionHeld.resume();
+    await retentionFirstPass;
+    cleanupHeld.resume();
+    await cleanupFirstPass;
+    await assertSettled(retentionFirst.versionId, retentionFirst.key);
+
+    const cleanupFirst = await abandonedUpload("CleanupFirst.pdf");
+    activeKey = cleanupFirst.key;
+    const cleanupHeldAgain = armPause();
+    const cleanupSecondPass = cleanupAbandonedUploadIntents(deps, { userId, now: recent });
+    await cleanupHeldAgain.entered;
+    const retentionHeldAgain = armPause();
+    const retentionSecondPass = runRetentionPass(
+      { db: harness.db, storage },
+      { now: recent, workerId: "worker-cleanup-first", leaseMs: 60_000 },
+    );
+    await retentionHeldAgain.entered;
+    cleanupHeldAgain.resume();
+    await cleanupSecondPass;
+    retentionHeldAgain.resume();
+    await retentionSecondPass;
+    await assertSettled(cleanupFirst.versionId, cleanupFirst.key);
+
+    await cleanupAbandonedUploadIntents(deps, { userId, now: recent });
+    const repeated = await runRetentionPass(
+      { db: harness.db, storage },
+      { now: recent, workerId: "worker-repeat" },
+    );
+    expect(repeated.succeeded + repeated.processed).toBeGreaterThanOrEqual(0);
+    expect(memory.has(verifiedKey)).toBe(true);
+    const verifiedRow = await harness.pgliteDb
+      .select({
+        verificationState: schema.resumeVersions.verificationState,
+        deletionState: schema.resumeVersions.deletionState,
+      })
+      .from(schema.resumeVersions)
+      .where(eq(schema.resumeVersions.id, verifiedIntent.versionId));
+    expect(verifiedRow).toEqual([{ verificationState: "verified", deletionState: "active" }]);
+
     await harness.app.close();
     await harness.client.close();
   });

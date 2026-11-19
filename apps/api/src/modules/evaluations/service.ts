@@ -34,6 +34,10 @@ import { EvaluationError } from "./errors.js";
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
+function storageFailureIsAbort(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export const DEFAULT_EVALUATION_LIST_LIMIT = 20;
 export const MAX_EVALUATION_LIST_LIMIT = 100;
 
@@ -118,10 +122,13 @@ export async function createEvaluation(
       signal: options.signal,
     });
   } catch (error) {
-    if (options.signal?.aborted) {
+    if (storageFailureIsAbort(error)) {
       throw new EvaluationError(499, "REQUEST_ABORTED", "Request was cancelled.");
     }
     throw error;
+  }
+  if (options.signal?.aborted) {
+    throw new EvaluationError(499, "REQUEST_ABORTED", "Request was cancelled.");
   }
   if (!bytes) {
     throw new EvaluationError(422, "CORRUPT", "The stored file could not be read.");
@@ -190,6 +197,10 @@ export async function createEvaluation(
   });
   if (result.scoreStatus !== "PROVISIONAL") {
     throw new EvaluationError(500, "INTERNAL_ERROR", "Internal error");
+  }
+
+  if (options.signal?.aborted) {
+    throw new EvaluationError(499, "REQUEST_ABORTED", "Request was cancelled.");
   }
 
   const now = new Date();
