@@ -28,6 +28,7 @@ import {
   users,
 } from "../../infrastructure/db/schema.js";
 import type { ObjectStorage } from "../../infrastructure/storage/memory.js";
+import { presentEvaluation, presentFindings, presentHistoryItem } from "./presentation.js";
 import { currentPeriodStart } from "../auth/service.js";
 import { ParseGateError, type ParseGate } from "../uploads/parse-gate.js";
 import { EvaluationError } from "./errors.js";
@@ -415,13 +416,9 @@ export async function listEvaluations(
       resumeVersionId: evaluations.resumeVersionId,
       originalFilename: resumeVersions.originalFilename,
       mimeType: resumeVersions.mimeType,
-      rubricVersion: evaluations.rubricVersion,
-      parserVersion: evaluations.parserVersion,
       baseScore: evaluations.baseScore,
-      penaltyTotal: evaluations.penaltyTotal,
       finalScore: evaluations.finalScore,
       scoreStatus: evaluations.scoreStatus,
-      categoriesJson: evaluations.categoriesJson,
       createdAt: evaluations.createdAt,
     })
     .from(evaluations)
@@ -536,10 +533,7 @@ async function loadEvaluation(db: Database, userId: string, evaluationId: string
       resumeVersionId: evaluations.resumeVersionId,
       originalFilename: resumeVersions.originalFilename,
       mimeType: resumeVersions.mimeType,
-      rubricVersion: evaluations.rubricVersion,
-      parserVersion: evaluations.parserVersion,
       baseScore: evaluations.baseScore,
-      penaltyTotal: evaluations.penaltyTotal,
       finalScore: evaluations.finalScore,
       scoreStatus: evaluations.scoreStatus,
       categoriesJson: evaluations.categoriesJson,
@@ -570,48 +564,39 @@ async function loadEvaluation(db: Database, userId: string, evaluationId: string
     .select({
       id: findings.id,
       ruleId: findings.ruleId,
-      category: findings.category,
-      severity: findings.severity,
       message: findings.message,
       suggestion: findings.suggestion,
       evidenceJson: findings.evidenceJson,
-      confidence: findings.confidence,
     })
     .from(findings)
     .where(eq(findings.evaluationId, evaluationId))
     .orderBy(findings.createdAt, findings.id);
 
-  const categories = categoryRecord(row.categoriesJson);
+  const createdAt = row.createdAt.toISOString();
   return {
-    evaluation: {
+    evaluation: presentEvaluation({
       id: row.id,
       resumeId: row.resumeId,
       resumeVersionId: row.resumeVersionId,
       originalFilename: row.originalFilename,
       mimeType: row.mimeType,
-      rubricVersion: row.rubricVersion,
-      parserVersion: row.parserVersion,
       scoreStatus: row.scoreStatus,
       baseScore: row.baseScore,
-      denominator: categories.denominator,
-      penaltyTotal: row.penaltyTotal,
-      penaltyStatus: categories.penaltyStatus,
       finalScore: row.finalScore,
-      criteria: categories.criteria,
-      penalties: categories.penalties,
+      criteria: row.categoriesJson,
       jdMatch: row.jdMatchJson,
-      createdAt: row.createdAt.toISOString(),
-    },
-    findings: findingRows.map((finding) => ({
-      id: finding.id,
-      ruleId: finding.ruleId,
-      category: finding.category,
-      severity: finding.severity,
-      message: finding.message,
-      suggestion: finding.suggestion,
-      confidence: finding.confidence,
-      evidence: finding.evidenceJson,
-    })),
+      createdAt,
+    }),
+    findings: presentFindings(
+      row.categoriesJson,
+      findingRows.map((finding) => ({
+        id: finding.id,
+        ruleId: finding.ruleId,
+        message: finding.message,
+        suggestion: finding.suggestion,
+        evidence: finding.evidenceJson,
+      })),
+    ),
     job: { id: row.jobId, status: row.jobStatus },
   };
 }
@@ -692,53 +677,22 @@ function summaryOf(row: {
   resumeVersionId: string;
   originalFilename: string;
   mimeType: string;
-  rubricVersion: string;
   scoreStatus: string;
   baseScore: number | null;
-  penaltyTotal: number | null;
   finalScore: number | null;
-  categoriesJson: unknown;
   createdAt: Date;
 }) {
-  const categories = categoryRecord(row.categoriesJson);
-  return {
+  return presentHistoryItem({
     id: row.id,
     resumeId: row.resumeId,
     resumeVersionId: row.resumeVersionId,
     originalFilename: row.originalFilename,
     mimeType: row.mimeType,
-    rubricVersion: row.rubricVersion,
     scoreStatus: row.scoreStatus,
     baseScore: row.baseScore,
-    denominator: categories.denominator,
-    penaltyTotal: row.penaltyTotal,
-    penaltyStatus: categories.penaltyStatus,
     finalScore: row.finalScore,
     createdAt: row.createdAt.toISOString(),
-  };
-}
-
-function categoryRecord(value: unknown): {
-  denominator: number;
-  penaltyStatus: string;
-  penalties: unknown;
-  criteria: unknown;
-} {
-  if (typeof value === "object" && value !== null && "denominator" in value && "penaltyStatus" in value) {
-    const record = value as {
-      denominator: unknown;
-      penaltyStatus: unknown;
-      penalties?: unknown;
-      criteria?: unknown;
-    };
-    return {
-      denominator: typeof record.denominator === "number" ? record.denominator : 0,
-      penaltyStatus: typeof record.penaltyStatus === "string" ? record.penaltyStatus : "not_evaluated",
-      penalties: record.penalties ?? [],
-      criteria: record.criteria ?? [],
-    };
-  }
-  return { denominator: 0, penaltyStatus: "not_evaluated", penalties: [], criteria: [] };
+  });
 }
 
 function limitsFor(
