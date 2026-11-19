@@ -859,8 +859,107 @@ describe("resume upload", () => {
     await harness.client.close();
   });
 
+  it("cancels after the storage read returns and keeps an active request distinct from a storage AbortError", async () => {
+    const memory = new MemoryStorage();
+    const afterRead = new AbortController();
+    const afterReadStorage: ObjectStorage = {
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: async (key, options) => {
+        const bytes = await memory.get(key, options);
+        afterRead.abort();
+        return bytes;
+      },
+    };
+    const afterReadApp = await createTestApp({}, { storage: afterReadStorage });
+    const afterReadUser = await sessionFor(afterReadApp.app, "abort-after-read@example.com");
+    const afterReadIntent = await createUploadIntent(
+      {
+        db: afterReadApp.db,
+        storage: afterReadStorage,
+        config: afterReadApp.config,
+        parseGate: afterReadApp.parseGate,
+      },
+      afterReadUser.userId,
+      { filename: "AfterRead.pdf", mimeType: PDF_MIME, sizeBytes: 100 },
+    );
+    const afterReadKey = afterReadIntent.upload.url.replace("memory://upload/", "");
+    await memory.put(afterReadKey, samplePdfBytes());
+    await expect(
+      completeUpload(
+        {
+          db: afterReadApp.db,
+          storage: afterReadStorage,
+          config: afterReadApp.config,
+          parseGate: afterReadApp.parseGate,
+        },
+        afterReadUser.userId,
+        afterReadIntent.resumeId,
+        afterReadIntent.versionId,
+        { signal: afterRead.signal },
+      ),
+    ).rejects.toMatchObject({ statusCode: 499, code: "REQUEST_ABORTED" });
+    expect(
+      await afterReadApp.pgliteDb
+        .select({ state: schema.resumeVersions.verificationState })
+        .from(schema.resumeVersions)
+        .where(eq(schema.resumeVersions.id, afterReadIntent.versionId)),
+    ).toEqual([{ state: "pending" }]);
+    await afterReadApp.app.close();
+    await afterReadApp.client.close();
+
+    const active = new AbortController();
+    const storageAbort: ObjectStorage = {
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: async () => {
+        const failure = new Error("storage client aborted the read");
+        failure.name = "AbortError";
+        throw failure;
+      },
+    };
+    const activeApp = await createTestApp({}, { storage: storageAbort });
+    const activeUser = await sessionFor(activeApp.app, "storage-abort-active@example.com");
+    const activeIntent = await createUploadIntent(
+      {
+        db: activeApp.db,
+        storage: storageAbort,
+        config: activeApp.config,
+        parseGate: activeApp.parseGate,
+      },
+      activeUser.userId,
+      { filename: "StorageAbort.pdf", mimeType: PDF_MIME, sizeBytes: 100 },
+    );
+    await expect(
+      completeUpload(
+        {
+          db: activeApp.db,
+          storage: storageAbort,
+          config: activeApp.config,
+          parseGate: activeApp.parseGate,
+        },
+        activeUser.userId,
+        activeIntent.resumeId,
+        activeIntent.versionId,
+        { signal: active.signal },
+      ),
+    ).rejects.toThrow(/storage client aborted the read/);
+    expect(active.signal.aborted).toBe(false);
+    expect(
+      await activeApp.pgliteDb
+        .select({ state: schema.resumeVersions.verificationState })
+        .from(schema.resumeVersions)
+        .where(eq(schema.resumeVersions.id, activeIntent.versionId)),
+    ).toEqual([{ state: "pending" }]);
+    await activeApp.app.close();
+    await activeApp.client.close();
+  });
+
   it("keeps cleanup and retention consistent when they delete the same abandoned object", async () => {
     const memory = new MemoryStorage();
+    const deleteCounts = new Map<string, number>();
     let activeKey: string | null = null;
     let nextPause: { markEntered: () => void; gate: Promise<void> } | null = null;
     const storage: ObjectStorage = {
@@ -874,6 +973,7 @@ describe("resume upload", () => {
           pause.markEntered();
           await pause.gate;
         }
+        deleteCounts.set(key, (deleteCounts.get(key) ?? 0) + 1);
         await memory.delete(key);
       },
     };
@@ -930,18 +1030,21 @@ describe("resume upload", () => {
       return { ...intent, key };
     }
 
-    async function assertSettled(versionId: string, objectKey: string) {
-      expect(memory.has(objectKey)).toBe(false);
-      const versions = await harness.pgliteDb
-        .select({ id: schema.resumeVersions.id })
+    async function versionRow(versionId: string) {
+      return harness.pgliteDb
+        .select({
+          deletionState: schema.resumeVersions.deletionState,
+          verificationState: schema.resumeVersions.verificationState,
+        })
         .from(schema.resumeVersions)
         .where(eq(schema.resumeVersions.id, versionId));
-      const tasks = await harness.pgliteDb
+    }
+
+    async function taskRows(versionId: string) {
+      return harness.pgliteDb
         .select({ state: schema.retentionTasks.state })
         .from(schema.retentionTasks)
         .where(eq(schema.retentionTasks.resumeVersionId, versionId));
-      expect(tasks.every((task) => task.state === "succeeded")).toBe(true);
-      expect(versions.length === 0 || tasks.length === 1).toBe(true);
     }
 
     const retentionFirst = await abandonedUpload("RetentionFirst.pdf");
@@ -956,10 +1059,23 @@ describe("resume upload", () => {
     );
     await retentionHeld.entered;
     retentionHeld.resume();
-    await retentionFirstPass;
+    await expect(retentionFirstPass).resolves.toMatchObject({
+      processed: 1,
+      succeeded: 1,
+      retried: 0,
+      permanentlyFailed: 0,
+    });
+    expect(deleteCounts.get(retentionFirst.key)).toBe(1);
+    expect(await versionRow(retentionFirst.versionId)).toEqual([
+      { verificationState: "rejected", deletionState: "deleted" },
+    ]);
+    expect(await taskRows(retentionFirst.versionId)).toEqual([{ state: "succeeded" }]);
     cleanupHeld.resume();
-    await cleanupFirstPass;
-    await assertSettled(retentionFirst.versionId, retentionFirst.key);
+    await expect(cleanupFirstPass).resolves.toBe(1);
+    expect(deleteCounts.get(retentionFirst.key)).toBe(2);
+    expect(memory.has(retentionFirst.key)).toBe(false);
+    expect(await versionRow(retentionFirst.versionId)).toEqual([]);
+    expect(await taskRows(retentionFirst.versionId)).toEqual([]);
 
     const cleanupFirst = await abandonedUpload("CleanupFirst.pdf");
     activeKey = cleanupFirst.key;
@@ -973,18 +1089,39 @@ describe("resume upload", () => {
     );
     await retentionHeldAgain.entered;
     cleanupHeldAgain.resume();
-    await cleanupSecondPass;
+    await expect(cleanupSecondPass).resolves.toBe(1);
+    expect(deleteCounts.get(cleanupFirst.key)).toBe(1);
+    expect(memory.has(cleanupFirst.key)).toBe(false);
+    expect(await versionRow(cleanupFirst.versionId)).toEqual([]);
+    expect(await taskRows(cleanupFirst.versionId)).toEqual([]);
     retentionHeldAgain.resume();
-    await retentionSecondPass;
-    await assertSettled(cleanupFirst.versionId, cleanupFirst.key);
+    await expect(retentionSecondPass).resolves.toMatchObject({
+      processed: 1,
+      succeeded: 0,
+      retried: 0,
+      permanentlyFailed: 0,
+    });
+    expect(deleteCounts.get(cleanupFirst.key)).toBe(2);
+    expect(await versionRow(cleanupFirst.versionId)).toEqual([]);
+    expect(await taskRows(cleanupFirst.versionId)).toEqual([]);
 
-    await cleanupAbandonedUploadIntents(deps, { userId, now: recent });
-    const repeated = await runRetentionPass(
-      { db: harness.db, storage },
-      { now: recent, workerId: "worker-repeat" },
-    );
-    expect(repeated.succeeded + repeated.processed).toBeGreaterThanOrEqual(0);
+    const deletesBeforeRepeat = new Map(deleteCounts);
+    await expect(cleanupAbandonedUploadIntents(deps, { userId, now: recent })).resolves.toBe(0);
+    await expect(
+      runRetentionPass({ db: harness.db, storage }, { now: recent, workerId: "worker-repeat" }),
+    ).resolves.toMatchObject({
+      processed: 0,
+      succeeded: 0,
+      retried: 0,
+      permanentlyFailed: 0,
+    });
+    expect(deleteCounts).toEqual(deletesBeforeRepeat);
+    expect(deleteCounts.get(verifiedKey) ?? 0).toBe(0);
     expect(memory.has(verifiedKey)).toBe(true);
+    const openTasks = await harness.pgliteDb
+      .select({ state: schema.retentionTasks.state })
+      .from(schema.retentionTasks);
+    expect(openTasks.filter((task) => task.state === "pending" || task.state === "failed")).toEqual([]);
     const verifiedRow = await harness.pgliteDb
       .select({
         verificationState: schema.resumeVersions.verificationState,

@@ -34,8 +34,8 @@ import { EvaluationError } from "./errors.js";
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-function storageFailureIsAbort(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
+function storageFailureIsAbort(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true && error instanceof Error && error.name === "AbortError";
 }
 
 export const DEFAULT_EVALUATION_LIST_LIMIT = 20;
@@ -122,7 +122,7 @@ export async function createEvaluation(
       signal: options.signal,
     });
   } catch (error) {
-    if (storageFailureIsAbort(error)) {
+    if (storageFailureIsAbort(error, options.signal)) {
       throw new EvaluationError(499, "REQUEST_ABORTED", "Request was cancelled.");
     }
     throw error;

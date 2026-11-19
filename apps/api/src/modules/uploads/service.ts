@@ -351,7 +351,7 @@ export async function completeUpload(
       await markRejectedIfPending(deps.db, version.id);
       throw new UploadError(413, "PAYLOAD_TOO_LARGE", "The file is larger than the upload limit.");
     }
-    if (storageFailureIsAbort(error)) {
+    if (storageFailureIsAbort(error, options.signal)) {
       throw new UploadError(499, "REQUEST_ABORTED", "Request was cancelled.");
     }
     throw error;
@@ -777,8 +777,8 @@ export async function deleteResume(db: Database, userId: string, resumeId: strin
   });
 }
 
-function storageFailureIsAbort(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
+function storageFailureIsAbort(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true && error instanceof Error && error.name === "AbortError";
 }
 
 function verifiedBody(resumeId: string, versionId: string, parserVersion: string | null) {

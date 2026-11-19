@@ -753,4 +753,110 @@ describe("evaluation dashboard API", () => {
     await app.close();
     await client.close();
   });
+
+  it("cancels after the storage read returns and keeps an active request distinct from a storage AbortError", async () => {
+    const memory = new MemoryStorage();
+    const afterRead = new AbortController();
+    let reads = 0;
+    const afterReadStorage: PutStorage = {
+      put: (key, bytes) => memory.put(key, bytes),
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: async (key, options) => {
+        reads += 1;
+        const bytes = await memory.get(key, options);
+        if (reads > 1) {
+          afterRead.abort();
+        }
+        return bytes;
+      },
+    };
+    const afterReadApp = await createTestApp(afterReadStorage);
+    const owner = await sessionFor(afterReadApp.app, "abort-after-score-read@example.com");
+    const verified = await verifiedVersion(afterReadApp.app, afterReadStorage, owner, "After_Read.pdf");
+    const user = await afterReadApp.pgliteDb.select({ id: schema.users.id }).from(schema.users);
+    const userId = user[0]?.id;
+    if (!userId) {
+      throw new Error("missing user");
+    }
+    await expect(
+      createEvaluation(
+        {
+          db: afterReadApp.db,
+          storage: afterReadStorage,
+          config: afterReadApp.config,
+          parseGate: afterReadApp.parseGate,
+        },
+        userId,
+        {
+          resumeVersionId: verified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey: "abort-after-read",
+        },
+        { signal: afterRead.signal },
+      ),
+    ).rejects.toMatchObject({ statusCode: 499, code: "REQUEST_ABORTED" });
+    expect(
+      await afterReadApp.pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations),
+    ).toEqual([]);
+    await afterReadApp.app.close();
+    await afterReadApp.client.close();
+
+    const active = new AbortController();
+    let activeReads = 0;
+    const storageAbort: PutStorage = {
+      put: (key, bytes) => memory.put(key, bytes),
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: (key, options) => {
+        activeReads += 1;
+        if (activeReads === 1) {
+          return memory.get(key, options);
+        }
+        const failure = new Error("storage client aborted the read");
+        failure.name = "AbortError";
+        throw failure;
+      },
+    };
+    const activeApp = await createTestApp(storageAbort);
+    const activeOwner = await sessionFor(activeApp.app, "storage-abort-score@example.com");
+    const activeVerified = await verifiedVersion(
+      activeApp.app,
+      storageAbort,
+      activeOwner,
+      "Storage_Abort.pdf",
+    );
+    const activeUser = await activeApp.pgliteDb.select({ id: schema.users.id }).from(schema.users);
+    const activeUserId = activeUser[0]?.id;
+    if (!activeUserId) {
+      throw new Error("missing user");
+    }
+    await expect(
+      createEvaluation(
+        {
+          db: activeApp.db,
+          storage: storageAbort,
+          config: activeApp.config,
+          parseGate: activeApp.parseGate,
+        },
+        activeUserId,
+        {
+          resumeVersionId: activeVerified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey: "storage-abort-active",
+        },
+        { signal: active.signal },
+      ),
+    ).rejects.toThrow(/storage client aborted the read/);
+    expect(active.signal.aborted).toBe(false);
+    expect(
+      await activeApp.pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations),
+    ).toEqual([]);
+    await activeApp.app.close();
+    await activeApp.client.close();
+  });
 });
