@@ -78,5 +78,21 @@ describe("loadConfig", () => {
       loadConfig({ SIGNED_URL_TTL_SECONDS: String(MAX_SIGNED_URL_TTL_SECONDS + 1) }),
     ).toThrow(/SIGNED_URL_TTL_SECONDS/);
     expect(() => loadConfig({ R2_ACCOUNT_ID: "only-one-field" })).toThrow(/R2 configuration/);
+    expect(() =>
+      loadConfig({
+        R2_ACCOUNT_ID: "evil.example#",
+        R2_ACCESS_KEY_ID: "key",
+        R2_SECRET_ACCESS_KEY: "secret",
+        R2_BUCKET: "vervecv-private",
+      }),
+    ).toThrow(/R2_ACCOUNT_ID/);
+    expect(
+      loadConfig({
+        R2_ACCOUNT_ID: "0123456789abcdef0123456789abcdef",
+        R2_ACCESS_KEY_ID: "key",
+        R2_SECRET_ACCESS_KEY: "secret",
+        R2_BUCKET: "vervecv-private",
+      }).r2?.bucket,
+    ).toBe("vervecv-private");
   });
 });

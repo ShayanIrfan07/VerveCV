@@ -9,6 +9,9 @@ import {
 
 export const MAX_SIGNED_URL_TTL_SECONDS = 3_600;
 
+const R2_ACCOUNT_ID = /^[0-9a-f]{32}$/i;
+const R2_BUCKET_NAME = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
+
 export interface R2Config {
   accountId: string;
   accessKeyId: string;
@@ -16,10 +19,22 @@ export interface R2Config {
   bucket: string;
 }
 
+export function assertR2Config(config: R2Config): void {
+  if (!R2_ACCOUNT_ID.test(config.accountId)) {
+    throw new Error("R2_ACCOUNT_ID must be a 32-character hexadecimal account id");
+  }
+  if (!R2_BUCKET_NAME.test(config.bucket)) {
+    throw new Error(
+      "R2_BUCKET must be 3 to 63 characters of lowercase letters, numbers, and hyphens",
+    );
+  }
+}
+
 export function createR2Storage(
   config: R2Config,
   fetchImpl: typeof fetch = fetch,
 ): ObjectStorage {
+  assertR2Config(config);
   const client = new AwsClient({
     accessKeyId: config.accessKeyId,
     secretAccessKey: config.secretAccessKey,
@@ -48,14 +63,13 @@ export function createR2Storage(
     async get(key: string, options?: StorageGetOptions): Promise<Uint8Array | null> {
       const url = new URL(`${base}/${encodeKey(key)}`);
       const signed = await client.sign(new Request(url, { method: "GET" }));
-      const response = await fetchImpl(
-        signed,
-        options?.signal ? { signal: options.signal } : undefined,
-      );
+      const response = await fetchImpl(signed, requestInit(options?.signal));
       if (response.status === 404) {
+        await response.body?.cancel();
         return null;
       }
       if (!response.ok) {
+        await response.body?.cancel();
         throw new Error("Object storage read failed");
       }
       return readBodyLimited(response, options?.maxBytes);
@@ -64,13 +78,12 @@ export function createR2Storage(
     async delete(key: string, options?: StorageDeleteOptions): Promise<void> {
       const url = new URL(`${base}/${encodeKey(key)}`);
       const signed = await client.sign(new Request(url, { method: "DELETE" }));
-      const response = await fetchImpl(
-        signed,
-        options?.signal ? { signal: options.signal } : undefined,
-      );
+      const response = await fetchImpl(signed, requestInit(options?.signal));
       if (response.status === 404 || response.ok) {
+        await response.body?.cancel();
         return;
       }
+      await response.body?.cancel();
       throw new Error("Object storage delete failed");
     },
   };
@@ -123,6 +136,13 @@ async function readBodyLimited(
     offset += chunk.byteLength;
   }
   return out;
+}
+
+function requestInit(signal: AbortSignal | undefined): RequestInit {
+  return {
+    redirect: "error",
+    ...(signal ? { signal } : {}),
+  };
 }
 
 function assertValidSignedUrlTtl(expiresInSeconds: number): void {

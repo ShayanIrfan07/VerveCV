@@ -9,16 +9,20 @@ import { buildApp } from "./app.js";
 import { loadConfig, type AppConfig } from "./config.js";
 import type { Database } from "./infrastructure/db/client.js";
 import * as schema from "./infrastructure/db/schema.js";
-import { MemoryStorage } from "./infrastructure/storage/memory.js";
+import { MemoryStorage, type ObjectStorage } from "./infrastructure/storage/memory.js";
+import { createEvaluation } from "./modules/evaluations/service.js";
 import { ParseGate } from "./modules/uploads/parse-gate.js";
 
 const ORIGIN = "http://localhost:5173";
 
-async function createTestApp() {
+type PutStorage = ObjectStorage & {
+  put(key: string, bytes: Uint8Array): Promise<void>;
+};
+
+async function createTestApp(storage: PutStorage = new MemoryStorage()) {
   const client = new PGlite();
   const database = drizzle(client, { schema });
   await migrate(database, { migrationsFolder: path.resolve("database/migrations") });
-  const storage = new MemoryStorage();
   const base = loadConfig({
     LOG_LEVEL: "silent",
     ALLOWED_ORIGINS: ORIGIN,
@@ -45,13 +49,14 @@ async function createTestApp() {
     maxQueue: config.parseMaxQueue,
     maxWaitMs: config.parseQueueTimeoutMs,
   });
+  const db = database as unknown as Database;
   const app = await buildApp({
     config,
-    db: database as unknown as Database,
+    db,
     storage,
     parseGate,
   });
-  return { app, client, pgliteDb: database, storage, parseGate };
+  return { app, client, db, pgliteDb: database, storage, parseGate, config };
 }
 
 async function sessionFor(app: Awaited<ReturnType<typeof buildApp>>, email: string): Promise<string> {
@@ -74,7 +79,7 @@ async function sessionFor(app: Awaited<ReturnType<typeof buildApp>>, email: stri
 
 async function createPendingVersion(
   app: Awaited<ReturnType<typeof buildApp>>,
-  storage: MemoryStorage,
+  storage: PutStorage,
   cookie: string,
   filename = "AdaLovelace_Resume.pdf",
 ) {
@@ -94,7 +99,7 @@ async function createPendingVersion(
 
 async function verifiedVersion(
   app: Awaited<ReturnType<typeof buildApp>>,
-  storage: MemoryStorage,
+  storage: PutStorage,
   cookie: string,
   filename = "AdaLovelace_Resume.pdf",
 ) {
@@ -651,5 +656,207 @@ describe("evaluation dashboard API", () => {
 
     await app.close();
     await client.close();
+  });
+
+  it("cancels the stored-object read when scoring is aborted", async () => {
+    const memory = new MemoryStorage();
+    const controller = new AbortController();
+    let reads = 0;
+    const storage: PutStorage = {
+      put: (key, bytes) => memory.put(key, bytes),
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: (key, options) => {
+        reads += 1;
+        if (reads === 1) {
+          return memory.get(key, options);
+        }
+        return new Promise((_resolve, reject) => {
+          const abort = () => {
+            const failure = new Error("The operation was aborted.");
+            failure.name = "AbortError";
+            reject(failure);
+          };
+          if (options?.signal?.aborted) {
+            abort();
+            return;
+          }
+          options?.signal?.addEventListener("abort", abort, { once: true });
+          controller.abort();
+        });
+      },
+    };
+    const { app, client, pgliteDb, config, parseGate, db } = await createTestApp(storage);
+    const owner = await sessionFor(app, "abort-score@example.com");
+    const verified = await verifiedVersion(app, storage, owner, "Abort_Score.pdf");
+    const user = await pgliteDb.select({ id: schema.users.id }).from(schema.users);
+    const userId = user[0]?.id;
+    if (!userId) {
+      throw new Error("missing user");
+    }
+    await expect(
+      createEvaluation(
+        { db, storage, config, parseGate },
+        userId,
+        {
+          resumeVersionId: verified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey: "abort-read",
+        },
+        { signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ statusCode: 499, code: "REQUEST_ABORTED" });
+    expect(await pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations)).toEqual([]);
+    await app.close();
+    await client.close();
+  });
+
+  it("does not label a storage read failure as request cancellation", async () => {
+    const memory = new MemoryStorage();
+    let reads = 0;
+    const storage: PutStorage = {
+      put: (key, bytes) => memory.put(key, bytes),
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: (key, options) => {
+        reads += 1;
+        if (reads === 1) {
+          return memory.get(key, options);
+        }
+        return Promise.reject(new Error("R2 connection aborted by peer"));
+      },
+    };
+    const { app, client, pgliteDb, config, parseGate, db } = await createTestApp(storage);
+    const owner = await sessionFor(app, "storage-not-cancel@example.com");
+    const verified = await verifiedVersion(app, storage, owner, "Storage_Error.pdf");
+    const user = await pgliteDb.select({ id: schema.users.id }).from(schema.users);
+    const userId = user[0]?.id;
+    if (!userId) {
+      throw new Error("missing user");
+    }
+    await expect(
+      createEvaluation(
+        { db, storage, config, parseGate },
+        userId,
+        {
+          resumeVersionId: verified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey: "storage-error",
+        },
+      ),
+    ).rejects.toThrow(/connection aborted by peer/);
+    expect(await pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations)).toEqual([]);
+    await app.close();
+    await client.close();
+  });
+
+  it("cancels after the storage read returns and keeps an active request distinct from a storage AbortError", async () => {
+    const memory = new MemoryStorage();
+    const afterRead = new AbortController();
+    let reads = 0;
+    const afterReadStorage: PutStorage = {
+      put: (key, bytes) => memory.put(key, bytes),
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: async (key, options) => {
+        reads += 1;
+        const bytes = await memory.get(key, options);
+        if (reads > 1) {
+          afterRead.abort();
+        }
+        return bytes;
+      },
+    };
+    const afterReadApp = await createTestApp(afterReadStorage);
+    const owner = await sessionFor(afterReadApp.app, "abort-after-score-read@example.com");
+    const verified = await verifiedVersion(afterReadApp.app, afterReadStorage, owner, "After_Read.pdf");
+    const user = await afterReadApp.pgliteDb.select({ id: schema.users.id }).from(schema.users);
+    const userId = user[0]?.id;
+    if (!userId) {
+      throw new Error("missing user");
+    }
+    await expect(
+      createEvaluation(
+        {
+          db: afterReadApp.db,
+          storage: afterReadStorage,
+          config: afterReadApp.config,
+          parseGate: afterReadApp.parseGate,
+        },
+        userId,
+        {
+          resumeVersionId: verified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey: "abort-after-read",
+        },
+        { signal: afterRead.signal },
+      ),
+    ).rejects.toMatchObject({ statusCode: 499, code: "REQUEST_ABORTED" });
+    expect(
+      await afterReadApp.pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations),
+    ).toEqual([]);
+    await afterReadApp.app.close();
+    await afterReadApp.client.close();
+
+    const active = new AbortController();
+    let activeReads = 0;
+    const storageAbort: PutStorage = {
+      put: (key, bytes) => memory.put(key, bytes),
+      createUploadUrl: (input) => memory.createUploadUrl(input),
+      createDownloadUrl: (input) => memory.createDownloadUrl(input),
+      delete: (key, options) => memory.delete(key, options),
+      get: (key, options) => {
+        activeReads += 1;
+        if (activeReads === 1) {
+          return memory.get(key, options);
+        }
+        const failure = new Error("storage client aborted the read");
+        failure.name = "AbortError";
+        throw failure;
+      },
+    };
+    const activeApp = await createTestApp(storageAbort);
+    const activeOwner = await sessionFor(activeApp.app, "storage-abort-score@example.com");
+    const activeVerified = await verifiedVersion(
+      activeApp.app,
+      storageAbort,
+      activeOwner,
+      "Storage_Abort.pdf",
+    );
+    const activeUser = await activeApp.pgliteDb.select({ id: schema.users.id }).from(schema.users);
+    const activeUserId = activeUser[0]?.id;
+    if (!activeUserId) {
+      throw new Error("missing user");
+    }
+    await expect(
+      createEvaluation(
+        {
+          db: activeApp.db,
+          storage: storageAbort,
+          config: activeApp.config,
+          parseGate: activeApp.parseGate,
+        },
+        activeUserId,
+        {
+          resumeVersionId: activeVerified.versionId,
+          candidateType: "FRESHER",
+          jobDescription: null,
+          idempotencyKey: "storage-abort-active",
+        },
+        { signal: active.signal },
+      ),
+    ).rejects.toThrow(/storage client aborted the read/);
+    expect(active.signal.aborted).toBe(false);
+    expect(
+      await activeApp.pgliteDb.select({ id: schema.evaluations.id }).from(schema.evaluations),
+    ).toEqual([]);
+    await activeApp.app.close();
+    await activeApp.client.close();
   });
 });

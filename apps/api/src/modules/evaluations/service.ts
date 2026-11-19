@@ -34,6 +34,10 @@ import { EvaluationError } from "./errors.js";
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
+function storageFailureIsAbort(error: unknown, signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true && error instanceof Error && error.name === "AbortError";
+}
+
 export const DEFAULT_EVALUATION_LIST_LIMIT = 20;
 export const MAX_EVALUATION_LIST_LIMIT = 100;
 
@@ -111,9 +115,21 @@ export async function createEvaluation(
     throw new EvaluationError(503, "PARSE_LIMITS_UNSET", "Parse limits are not configured.");
   }
 
-  const bytes = await deps.storage.get(version.objectKey, {
-    maxBytes: deps.config.uploadLimitBytes,
-  });
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await deps.storage.get(version.objectKey, {
+      maxBytes: deps.config.uploadLimitBytes,
+      signal: options.signal,
+    });
+  } catch (error) {
+    if (storageFailureIsAbort(error, options.signal)) {
+      throw new EvaluationError(499, "REQUEST_ABORTED", "Request was cancelled.");
+    }
+    throw error;
+  }
+  if (options.signal?.aborted) {
+    throw new EvaluationError(499, "REQUEST_ABORTED", "Request was cancelled.");
+  }
   if (!bytes) {
     throw new EvaluationError(422, "CORRUPT", "The stored file could not be read.");
   }
@@ -181,6 +197,10 @@ export async function createEvaluation(
   });
   if (result.scoreStatus !== "PROVISIONAL") {
     throw new EvaluationError(500, "INTERNAL_ERROR", "Internal error");
+  }
+
+  if (options.signal?.aborted) {
+    throw new EvaluationError(499, "REQUEST_ABORTED", "Request was cancelled.");
   }
 
   const now = new Date();

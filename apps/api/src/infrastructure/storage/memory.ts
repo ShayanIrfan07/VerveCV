@@ -45,7 +45,9 @@ export class MemoryStorage implements ObjectStorage {
 
   async get(key: string, options?: StorageGetOptions): Promise<Uint8Array | null> {
     if (options?.signal?.aborted) {
-      throw new Error("Object storage read aborted");
+      const aborted = new Error("Object storage read aborted");
+      aborted.name = "AbortError";
+      throw aborted;
     }
     const found = this.objects.get(key) ?? null;
     if (found && options?.maxBytes !== undefined && found.byteLength > options.maxBytes) {
@@ -56,7 +58,9 @@ export class MemoryStorage implements ObjectStorage {
 
   async delete(key: string, options?: StorageDeleteOptions): Promise<void> {
     if (options?.signal?.aborted) {
-      throw new Error("Object storage delete aborted");
+      const aborted = new Error("Object storage delete aborted");
+      aborted.name = "AbortError";
+      throw aborted;
     }
     this.objects.delete(key);
   }

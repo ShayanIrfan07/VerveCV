@@ -1,9 +1,11 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 import { StorageObjectTooLargeError } from "./memory.js";
 import { createR2Storage, MAX_SIGNED_URL_TTL_SECONDS } from "./r2.js";
 
 const R2_CONFIG = {
-  accountId: "acct123",
+  accountId: "0123456789abcdef0123456789abcdef",
   accessKeyId: "AKIAIOSFODNN7EXAMPLE",
   secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
   bucket: "vervecv-private",
@@ -20,7 +22,7 @@ describe("createR2Storage", () => {
       expiresInSeconds: 300,
     });
     const putUrl = new URL(putUrlString);
-    expect(putUrl.origin).toBe("https://acct123.r2.cloudflarestorage.com");
+    expect(putUrl.origin).toBe("https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com");
     expect(putUrl.pathname).toBe("/vervecv-private/obj_1234");
     expect(putUrl.searchParams.get("X-Amz-Algorithm")).toBe("AWS4-HMAC-SHA256");
     expect(putUrl.searchParams.get("X-Amz-Expires")).toBe("300");
@@ -72,5 +74,39 @@ describe("createR2Storage", () => {
       StorageObjectTooLargeError,
     );
     await expect(storage.delete("obj_missing")).resolves.toBeUndefined();
+  });
+
+  it("rejects account ids and bucket names that would change the storage host", () => {
+    expect(() =>
+      createR2Storage({ ...R2_CONFIG, accountId: "evil.example#" }),
+    ).toThrow(/R2_ACCOUNT_ID/);
+    expect(() => createR2Storage({ ...R2_CONFIG, bucket: "bucket/../other" })).toThrow(/R2_BUCKET/);
+  });
+
+  it("does not follow a redirect when reading or deleting an object", async () => {
+    let landed = 0;
+    const server = http.createServer((request, response) => {
+      const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/landed") {
+        landed += 1;
+        response.writeHead(200);
+        response.end("stolen");
+        return;
+      }
+      response.writeHead(302, { location: "/landed" });
+      response.end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as AddressInfo;
+    const redirectUrl = `http://127.0.0.1:${address.port}/object`;
+    const fetchImpl: typeof fetch = (_input, init) => fetch(redirectUrl, init);
+    try {
+      const storage = createR2Storage(R2_CONFIG, fetchImpl);
+      await expect(storage.get("obj_1234")).rejects.toThrow();
+      await expect(storage.delete("obj_1234")).rejects.toThrow();
+      expect(landed).toBe(0);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
   });
 });
