@@ -90,6 +90,59 @@ describe("specified band arithmetic", () => {
     expect(scoreOf(minimumBulletsScore(34.9))).toBe(0);
   });
 
+  it("scores supplied keywords once per parsed entry and leaves every penalty off", () => {
+    const dictionary = {
+      version: "fixture-dictionary",
+      terms: [
+        { id: "java", canonical: "Java", aliases: [] },
+        { id: "react", canonical: "React", aliases: ["React.js"] },
+      ],
+    };
+    const document = emptyDocument();
+    const section: ResumeSection = {
+      id: "work",
+      kind: "WORK_EXPERIENCE",
+      heading: "Experience",
+      blockIds: ["company", "role", "bullet-java", "role-2", "bullet-react"],
+    };
+    document.sections.push(section);
+    document.blocks.push(
+      block("company", "work", "Java Corporation", "paragraph"),
+      block("role", "work", "Engineer 2020", "paragraph"),
+      block("bullet-java", "work", "Shipped React UI.", "bullet"),
+      block("role-2", "work", "Engineer 2018", "paragraph"),
+      block("bullet-react", "work", "Shipped Java services and React.js.", "bullet"),
+    );
+    const scoredKeywords = evaluate(document, { ...options, keywordDictionary: dictionary });
+    expect(ruleScore(scoredKeywords, "industry-keywords")).toBe(5);
+    expect(scoredKeywords.criteria.find((item) => item.ruleId === "industry-keywords")?.findings).toEqual([]);
+    expect(JSON.stringify(scoredKeywords)).not.toContain("fixture-dictionary");
+    expect(scoredKeywords.penalties.every((penalty) => penalty.status === "not_evaluated" && penalty.deduction === null)).toBe(true);
+    expect(scoredKeywords.finalScore).toBeNull();
+
+    const withoutDictionary = evaluate(document, options);
+    expect(withoutDictionary.criteria.find((item) => item.ruleId === "industry-keywords")?.status).toBe("withheld");
+    expect(withoutDictionary.baseScore).toBe(evaluate(document, options).baseScore);
+
+    const prose = emptyDocument();
+    prose.sections.push({
+      id: "work",
+      kind: "WORK_EXPERIENCE",
+      heading: "Experience",
+      blockIds: ["story", "loose"],
+    });
+    prose.blocks.push(
+      block("story", "work", "One two three four five six seven eight nine ten eleven twelve", "paragraph"),
+      block("loose", "work", "Shipped Java and React.", "bullet"),
+    );
+    expect(evaluate(prose, { ...options, keywordDictionary: dictionary }).criteria.find((item) => item.ruleId === "industry-keywords")?.status).toBe(
+      "withheld",
+    );
+    expect(evaluate(emptyDocument(), { ...options, keywordDictionary: dictionary }).criteria.find((item) => item.ruleId === "industry-keywords")?.status).toBe(
+      "withheld",
+    );
+  });
+
   it("rounds the keyword example to 6 and cannot exceed 7", () => {
     expect(scoreOf(keywordMatchScore([6 / 8, 8 / 8, 2 / 2]))).toBe(6);
     expect(scoreOf(keywordMatchScore([1]))).toBe(7);

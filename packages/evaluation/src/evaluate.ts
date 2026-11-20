@@ -1,4 +1,6 @@
-import { uniqueSkillScore } from "./bands.js";
+import { keywordMatchScore, uniqueSkillScore } from "./bands.js";
+import { matchEntryBullets, type KeywordDictionary } from "./detectors.js";
+import { parseEntries } from "./entries.js";
 import { isTechnicalTerm } from "./technical-terms.js";
 import { formattingConsistencyRule } from "./formatting.js";
 import { grammarAndSpellingRule, punctuationRule, type SpellChecker } from "./grammar.js";
@@ -23,6 +25,11 @@ export interface EvaluationOptions {
   jobDescription: string | null;
   ignoredTerms?: string[];
   spellChecker?: SpellChecker | null;
+  /**
+   * Caller-supplied keyword list. Absent, empty, or paired with an ambiguous
+   * entry parse leaves industry keywords withheld. This is not a role vocabulary.
+   */
+  keywordDictionary?: KeywordDictionary;
 }
 
 export interface JdMatch {
@@ -75,7 +82,6 @@ const WITHHELD_RULES: Array<[string, number, RuleWithholdReasonCode]> = [
   ["entry-details", CRITERION_MAXIMA.entryDetails, "OPEN_DECISION"],
   ["education-details", CRITERION_MAXIMA.educationDetails, "OPEN_DECISION"],
   ["skills-ratio", CRITERION_MAXIMA.skillsRatio, "OPEN_DECISION"],
-  ["industry-keywords", CRITERION_MAXIMA.industryKeywords, "OPEN_DECISION"],
 ];
 
 export function evaluate(document: ResumeDocument, options: EvaluationOptions): EvaluationResult {
@@ -90,6 +96,7 @@ export function evaluate(document: ResumeDocument, options: EvaluationOptions): 
     punctuationRule(document),
     formattingConsistencyRule(document),
     ...WITHHELD_RULES.map(([ruleId, maxScore, reasonCode]) => withheld(ruleId, maxScore, reasonCode)),
+    industryKeywords(document, options.keywordDictionary),
     requiredSections(document, options.candidateType),
     contactInformation(document, options.candidateName, detectCandidateName(document)),
     uniqueSkills(document),
@@ -518,6 +525,29 @@ function escapeRegExp(value: string): string {
 
 function digitCount(value: string): number {
   return value.replace(/\D/gu, "").length;
+}
+
+function industryKeywords(document: ResumeDocument, dictionary: KeywordDictionary | undefined): RuleResult {
+  const maxScore = CRITERION_MAXIMA.industryKeywords;
+  if (dictionary === undefined || dictionary.terms.length === 0) {
+    return withheld("industry-keywords", maxScore, "OPEN_DECISION");
+  }
+  const parsed = parseEntries(document);
+  if (parsed.issues.length > 0 || parsed.entries.length === 0) {
+    return withheld("industry-keywords", maxScore, "OPEN_DECISION");
+  }
+  const text = new Map(document.blocks.map((block) => [block.id, block.text]));
+  const required = dictionary.terms.length;
+  const completions = parsed.entries.map((entry) => {
+    const bullets = entry.bulletBlockIds.map((id) => text.get(id) ?? "");
+    const found = matchEntryBullets(bullets, dictionary, entry.id).length;
+    return Math.min(found / required, 1);
+  });
+  const band = keywordMatchScore(completions);
+  if (band.status !== "scored") {
+    return withheld("industry-keywords", maxScore, "OPEN_DECISION");
+  }
+  return scored("industry-keywords", maxScore, band.score, []);
 }
 
 function scored(ruleId: string, maxScore: number, score: number, findings: EvaluationFinding[]): RuleResult {
