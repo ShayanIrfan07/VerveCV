@@ -114,7 +114,7 @@ describe("specified band arithmetic", () => {
       block("bullet-react", "work", "Shipped Java services and React.js.", "bullet"),
     );
     const scoredKeywords = evaluate(document, { ...options, keywordDictionary: dictionary });
-    expect(ruleScore(scoredKeywords, "industry-keywords")).toBe(5);
+    expect(ruleScore(scoredKeywords, "industry-keywords")).toBe(1);
     expect(scoredKeywords.criteria.find((item) => item.ruleId === "industry-keywords")?.findings).toEqual([]);
     expect(JSON.stringify(scoredKeywords)).not.toContain("fixture-dictionary");
     expect(scoredKeywords.penalties.every((penalty) => penalty.status === "not_evaluated" && penalty.deduction === null)).toBe(true);
@@ -141,6 +141,57 @@ describe("specified band arithmetic", () => {
     expect(evaluate(emptyDocument(), { ...options, keywordDictionary: dictionary }).criteria.find((item) => item.ruleId === "industry-keywords")?.status).toBe(
       "withheld",
     );
+  });
+
+  it("averages the rubric requirements and rounds 6/8, 8/8, and 2/2 to 6", () => {
+    const terms = Array.from({ length: 10 }, (_, index) => ({
+      id: `term-${index}`,
+      canonical: `term${index}`,
+      aliases: [] as string[],
+    }));
+    const dictionary = { version: "fixture-dictionary", terms };
+    const mention = (count: number): string => terms.slice(0, count).map((term) => term.canonical).join(" ");
+    const document = resumeWithEntries([
+      ["WORK_EXPERIENCE", "work-a", mention(6)],
+      ["WORK_EXPERIENCE", "work-b", mention(8)],
+      ["LEADERSHIP_EXPERIENCE", "lead", mention(2)],
+    ]);
+    const result = evaluate(document, { ...options, keywordDictionary: dictionary });
+    expect(ruleScore(result, "industry-keywords")).toBe(6);
+    expect(result.criteria.find((item) => item.ruleId === "industry-keywords")?.maxScore).toBe(7);
+    expect(result.finalScore).toBeNull();
+    expect(JSON.stringify(result)).not.toContain("fixture-dictionary");
+
+    const projects = resumeWithEntries([["PROJECTS", "project", mention(2)]]);
+    expect(ruleScore(evaluate(projects, { ...options, keywordDictionary: dictionary }), "industry-keywords")).toBe(7);
+
+    const repeated = resumeWithEntries([["WORK_EXPERIENCE", "repeat", Array.from({ length: 8 }, () => "term0").join(" ")]]);
+    expect(ruleScore(evaluate(repeated, { ...options, keywordDictionary: dictionary }), "industry-keywords")).toBe(1);
+  });
+
+  it("withholds industry keywords for a malformed dictionary", () => {
+    const document = resumeWithEntries([["PROJECTS", "project", "term0 term1"]]);
+    const malformed = [
+      undefined,
+      { version: "", terms: [{ id: "term-0", canonical: "term0", aliases: [] }] },
+      { version: "fixture", terms: [] },
+      { version: "fixture", terms: [{ id: "term-0", canonical: " ", aliases: [] }] },
+      { version: "fixture", terms: [{ id: "term-0", canonical: "term0", aliases: [""] }] },
+      { version: "fixture", terms: [{ id: "term-0", canonical: "term0", aliases: "term0" }] },
+      {
+        version: "fixture",
+        terms: [
+          { id: "term-0", canonical: "term0", aliases: [] },
+          { id: "term-0", canonical: "term1", aliases: [] },
+        ],
+      },
+    ];
+    for (const dictionary of malformed) {
+      const result = evaluate(document, { ...options, keywordDictionary: dictionary as never });
+      expect(result.criteria.find((item) => item.ruleId === "industry-keywords")?.status).toBe("withheld");
+      expect(result.criteria.find((item) => item.ruleId === "industry-keywords")?.score).toBeNull();
+      expect(result.finalScore).toBeNull();
+    }
   });
 
   it("rounds the keyword example to 6 and cannot exceed 7", () => {
@@ -444,6 +495,18 @@ function withSections(kinds: ResumeSection["kind"][]): ResumeDocument {
   kinds.forEach((kind, index) => {
     const section: ResumeSection = { id: `section-${index}`, kind, heading: kind, blockIds: [] };
     document.sections.push(section);
+  });
+  return document;
+}
+
+function resumeWithEntries(rows: Array<[ResumeSection["kind"], string, string]>): ResumeDocument {
+  const document = emptyDocument();
+  rows.forEach(([kind, id, text], index) => {
+    const sectionId = `section-${index}`;
+    const headerId = `${id}-header`;
+    const bulletId = `${id}-bullet`;
+    document.sections.push({ id: sectionId, kind, heading: kind, blockIds: [headerId, bulletId] });
+    document.blocks.push(block(headerId, sectionId, "Engineer 2020", "paragraph"), block(bulletId, sectionId, text, "bullet"));
   });
   return document;
 }

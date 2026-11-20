@@ -26,8 +26,9 @@ export interface EvaluationOptions {
   ignoredTerms?: string[];
   spellChecker?: SpellChecker | null;
   /**
-   * Caller-supplied keyword list. Absent, empty, or paired with an ambiguous
-   * entry parse leaves industry keywords withheld. This is not a role vocabulary.
+   * Caller-supplied keyword list. Absent, empty, malformed, or paired with an
+   * ambiguous entry parse leaves industry keywords withheld. This is not a
+   * production role vocabulary, and the API does not accept one from a client.
    */
   keywordDictionary?: KeywordDictionary;
 }
@@ -527,9 +528,19 @@ function digitCount(value: string): number {
   return value.replace(/\D/gu, "").length;
 }
 
+function keywordRequirement(kind: ResumeSectionKind): number | null {
+  if (kind === "WORK_EXPERIENCE") {
+    return 8;
+  }
+  if (kind === "LEADERSHIP_EXPERIENCE" || kind === "PROJECTS") {
+    return 2;
+  }
+  return null;
+}
+
 function industryKeywords(document: ResumeDocument, dictionary: KeywordDictionary | undefined): RuleResult {
   const maxScore = CRITERION_MAXIMA.industryKeywords;
-  if (dictionary === undefined || dictionary.terms.length === 0) {
+  if (!usableKeywordDictionary(dictionary)) {
     return withheld("industry-keywords", maxScore, "OPEN_DECISION");
   }
   const parsed = parseEntries(document);
@@ -537,17 +548,54 @@ function industryKeywords(document: ResumeDocument, dictionary: KeywordDictionar
     return withheld("industry-keywords", maxScore, "OPEN_DECISION");
   }
   const text = new Map(document.blocks.map((block) => [block.id, block.text]));
-  const required = dictionary.terms.length;
-  const completions = parsed.entries.map((entry) => {
+  const completions: number[] = [];
+  for (const entry of parsed.entries) {
+    const required = keywordRequirement(entry.sectionKind);
+    if (required === null) {
+      return withheld("industry-keywords", maxScore, "OPEN_DECISION");
+    }
     const bullets = entry.bulletBlockIds.map((id) => text.get(id) ?? "");
     const found = matchEntryBullets(bullets, dictionary, entry.id).length;
-    return Math.min(found / required, 1);
-  });
+    completions.push(Math.min(found / required, 1));
+  }
   const band = keywordMatchScore(completions);
   if (band.status !== "scored") {
     return withheld("industry-keywords", maxScore, "OPEN_DECISION");
   }
   return scored("industry-keywords", maxScore, band.score, []);
+}
+
+function usableKeywordDictionary(value: KeywordDictionary | undefined): value is KeywordDictionary {
+  if (value === undefined || typeof value.version !== "string" || value.version.trim().length === 0) {
+    return false;
+  }
+  if (!Array.isArray(value.terms) || value.terms.length === 0) {
+    return false;
+  }
+  const ids = new Set<string>();
+  for (const term of value.terms) {
+    if (typeof term !== "object" || term === null) {
+      return false;
+    }
+    if (typeof term.id !== "string" || term.id.trim().length === 0 || ids.has(term.id)) {
+      return false;
+    }
+    ids.add(term.id);
+    if (typeof term.canonical !== "string" || term.canonical.normalize("NFKC").trim().length === 0) {
+      return false;
+    }
+    if (!usablePhrases(term.aliases)) {
+      return false;
+    }
+    if (term.excludes !== undefined && !usablePhrases(term.excludes)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function usablePhrases(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((phrase: unknown) => typeof phrase === "string" && phrase.normalize("NFKC").trim().length > 0);
 }
 
 function scored(ruleId: string, maxScore: number, score: number, findings: EvaluationFinding[]): RuleResult {
