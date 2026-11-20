@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DETECTOR_VERSION,
   detectPronouns,
+  extractionArtifactIds,
   findDuplicateBullets,
   matchEntryBullets,
   observeAddresses,
@@ -158,6 +159,70 @@ describe("phase 4 detectors", () => {
         { id: "again", text: "Shipped the API.", paragraphId: "p-9" },
       ]),
     ).toEqual([]);
+  });
+
+  it("maps keyword and symbol offsets back to the original text when NFKC changes length", () => {
+    const ligature = "Shipped \uFB01le systems";
+    const fileDictionary: KeywordDictionary = {
+      version: "fixture-dictionary",
+      terms: [{ id: "file", canonical: "file", aliases: [] }],
+    };
+    const keyword = matchEntryBullets([ligature], fileDictionary, "entry-file");
+    expect(keyword).toHaveLength(1);
+    const hit = keyword[0];
+    expect(hit?.evidenceText).toBe("\uFB01le");
+    expect(ligature.slice(hit?.startOffset, hit?.endOffset)).toBe("\uFB01le");
+    expect((hit?.endOffset ?? 0) - (hit?.startOffset ?? 0)).toBe(3);
+
+    const acute = "caf\u0065\u0301";
+    const pronoun = detectPronouns(`${acute} I`);
+    expect(pronoun.map((item) => item.evidenceText)).toEqual(["I"]);
+    expect(pronoun[0]?.startOffset).toBe(acute.length + 1);
+
+    const symbol = observeSpecialCharacters("\uFB01le!");
+    expect(symbol.map((item) => item.evidenceText)).toEqual(["!"]);
+    expect(symbol[0]?.startOffset).toBe("\uFB01le".length);
+    expect("\uFB01le!".slice(symbol[0]?.startOffset, symbol[0]?.endOffset)).toBe("!");
+  });
+
+  it("gives repeated keywords in separate entries distinct stable ids", () => {
+    const again = matchEntryBullets(["Used Java in billing."], dictionary, "entry-a");
+    const other = matchEntryBullets(["Used Java in billing."], dictionary, "entry-b");
+    expect(again[0]?.canonical).toBe("java");
+    expect(other[0]?.canonical).toBe("java");
+    expect(again[0]?.id).not.toBe(other[0]?.id);
+    expect(again[0]?.id).toBe(matchEntryBullets(["Used Java in billing."], dictionary, "entry-a")[0]?.id);
+    expect(again[0]?.startOffset).toBe(other[0]?.startOffset);
+    const duplicate = findDuplicateBullets([
+      { id: "block-a", text: "Shipped the \uFB01le." },
+      { id: "block-b", text: "Shipped the \uFB01le." },
+    ]);
+    expect(duplicate[0]?.id).toContain("block-b");
+    expect(duplicate[0]?.endOffset).toBe("Shipped the \uFB01le.".length);
+    expect(duplicate[0]?.evidenceText).toBe("Shipped the \uFB01le.");
+  });
+
+  it("treats only overlapping copies on the same page as extraction artifacts", () => {
+    const blocks = Array.from({ length: 240 }, (_, index) => ({
+      id: `line-${index}`,
+      text: "Shipped the API.",
+      page: 1 + Math.floor(index / 80),
+      boxes: [{ page: 1 + Math.floor(index / 80), x: 72 + (index % 80) * 100, y: 400, width: 80, height: 12 }],
+    }));
+    blocks.push({
+      id: "overlap",
+      text: "Shipped the API.",
+      page: 1,
+      boxes: [{ page: 1, x: 72, y: 400, width: 80, height: 12 }],
+    });
+    const artifacts = extractionArtifactIds(blocks);
+    expect(artifacts).toEqual(new Set(["overlap"]));
+    expect(
+      extractionArtifactIds([
+        { id: "left", text: "Shipped the API.", boxes: [{ page: 1, x: 72, y: 400, width: 80, height: 12 }] },
+        { id: "right", text: "Shipped the API.", boxes: [{ page: 1, x: 200, y: 400, width: 80, height: 12 }] },
+      ]),
+    ).toEqual(new Set());
   });
 
   it("leaves keyword points and every penalty unevaluated", () => {

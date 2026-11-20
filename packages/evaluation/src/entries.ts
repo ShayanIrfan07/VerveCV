@@ -30,7 +30,9 @@ export interface EntryParseResult {
 
 /**
  * Groups bullets under a preceding header only when every header line is a short
- * non-sentence line. Wrapped PDF lines join the previous bullet or header.
+ * non-sentence line. A line of 12 or more words is prose even when it has no
+ * sentence punctuation, and that line stays ambiguous instead of becoming a role.
+ * Wrapped PDF lines join the previous bullet or header.
  * Prose, mixed geometry, and bullets with no header stay unassigned.
  */
 export function parseEntries(document: ResumeDocument): EntryParseResult {
@@ -160,7 +162,7 @@ function isVerticalNeighbor(previous: ResumeBlock, next: ResumeBlock, maxIndent:
 
 function isProse(text: string): boolean {
   const trimmed = text.trim();
-  return tokenizeWords(trimmed).length >= 12 && /[.!?]["']?$/u.test(trimmed);
+  return tokenizeWords(trimmed).length >= 12;
 }
 
 function dateText(lines: readonly string[]): string | null {

@@ -70,6 +70,21 @@ describe("entry parsing", () => {
     expect(parseEntries(prose).issues).toEqual([
       expect.objectContaining({ status: "ambiguous", reason: "uncertain-boundary", blockIds: ["story", "loose"] }),
     ]);
+
+    const unpunctuated = resume([
+      section("work", "WORK_EXPERIENCE", [
+        paragraph("story-2", "One two three four five six seven eight nine ten eleven twelve"),
+        bullet("loose-2", "Shipped the API."),
+      ]),
+    ]);
+    expect(parseEntries(unpunctuated).entries).toEqual([]);
+    expect(parseEntries(unpunctuated).issues).toEqual([
+      expect.objectContaining({ status: "ambiguous", reason: "uncertain-boundary", blockIds: ["story-2", "loose-2"] }),
+    ]);
+    const shortHeader = resume([
+      section("work", "WORK_EXPERIENCE", [paragraph("role-plain", "Engineer"), bullet("plain-bullet", "Shipped the API.")]),
+    ]);
+    expect(parseEntries(shortHeader).entries.map((entry) => entry.headerBlockIds)).toEqual([["role-plain"]]);
   });
 
   it("does not invent an entry for bullets, missing blocks, headers, or repeated chrome", () => {

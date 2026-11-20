@@ -21,6 +21,17 @@ export type DetectionType =
 
 export type DetectionQuality = "high" | "insufficient_policy" | "protected" | "unclassified";
 
+/**
+ * Highlight coordinates are UTF-16 code-unit indexes into the original string
+ * given to the detector. They are not indexes into an NFKC copy. NFKC is used
+ * only to find a match, and the match is mapped back before it is returned.
+ * `matchEntryBullets` joins the original bullet strings with one "\n" and uses
+ * that joined string as its coordinate system. Duplicate-bullet offsets cover
+ * the whole original bullet, from 0 through `text.length`.
+ * `id` is stable for the same type, scope, identity, and original offsets.
+ * Pass a distinct `scope` (entry id or block id) so the same match in two
+ * entries does not share an id.
+ */
 export interface Detection {
   id: string;
   type: DetectionType;
@@ -56,14 +67,14 @@ interface Span {
 
 const PRONOUNS = ["i", "me", "my", "we"] as const;
 
-export function matchEntryBullets(bullets: readonly string[], dictionary: KeywordDictionary): Detection[] {
+export function matchEntryBullets(bullets: readonly string[], dictionary: KeywordDictionary, scope?: string): Detection[] {
   const joined = bullets.join("\n");
-  return matchKeywords(joined, dictionary).map((hit) => ({ ...hit, method: "entry-bullets" }));
+  return matchKeywords(joined, dictionary, scope).map((hit) => ({ ...hit, method: "entry-bullets" }));
 }
 
-export function matchKeywords(text: string, dictionary: KeywordDictionary): Detection[] {
-  const source = text.normalize("NFKC");
-  const protectedSpans = emailAndUrlSpans(source);
+export function matchKeywords(text: string, dictionary: KeywordDictionary, scope?: string): Detection[] {
+  const aligned = alignNfkc(text);
+  const protectedSpans = emailAndUrlSpans(aligned.normalized);
   const aliases = dictionary.terms.flatMap((term) =>
     [term.canonical, ...term.aliases]
       .map((alias) => alias.normalize("NFKC").trim())
@@ -80,18 +91,33 @@ export function matchKeywords(text: string, dictionary: KeywordDictionary): Dete
       continue;
     }
     const pattern = boundedPattern(alias);
-    for (const match of source.matchAll(pattern)) {
+    for (const match of aligned.normalized.matchAll(pattern)) {
       const start = match.index;
       if (start === undefined) {
         continue;
       }
       const end = start + match[0].length;
-      if (overlaps(claimed, start, end) || overlaps(protectedSpans, start, end) || excluded(source, term, start, end)) {
+      if (overlaps(claimed, start, end) || overlaps(protectedSpans, start, end) || excluded(aligned.normalized, term, start, end)) {
+        continue;
+      }
+      const original = originalSpan(aligned, start, end);
+      if (original === null) {
         continue;
       }
       claimed.push({ start, end });
       seenTerms.add(term.id);
-      hits.push(detection("keyword", "keyword-alias", source.slice(start, end), start, end, "high", { canonical: term.id }));
+      hits.push(
+        detection(
+          "keyword",
+          "keyword-alias",
+          text.slice(original.start, original.end),
+          original.start,
+          original.end,
+          "high",
+          { canonical: term.id },
+          scope,
+        ),
+      );
       break;
     }
   }
@@ -124,72 +150,116 @@ export function tokenizeBlocks(blocks: readonly TokenBlock[]): string[] {
   return tokens;
 }
 
-export function detectPronouns(text: string): Detection[] {
-  const source = text.normalize("NFKC");
-  const blocked = [...emailAndUrlSpans(source), ...quotedSpans(source)];
+export function detectPronouns(text: string, scope?: string): Detection[] {
+  const aligned = alignNfkc(text);
+  const blocked = [...emailAndUrlSpans(aligned.normalized), ...quotedSpans(aligned.normalized)];
   const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${PRONOUNS.join("|")})(?![\\p{L}\\p{N}])`, "giu");
   const hits: Detection[] = [];
-  for (const match of source.matchAll(pattern)) {
+  for (const match of aligned.normalized.matchAll(pattern)) {
     const start = match.index;
     const word = match[1];
     if (start === undefined || word === undefined) {
       continue;
     }
     const end = start + word.length;
-    if (overlaps(blocked, start, end) || isIeAbbreviation(source, start)) {
+    if (overlaps(blocked, start, end) || isIeAbbreviation(aligned.normalized, start)) {
       continue;
     }
-    hits.push(detection("pronoun", "whole-token", source.slice(start, end), start, end, "high", { canonical: word.toLowerCase() }));
+    const original = originalSpan(aligned, start, end);
+    if (original === null) {
+      continue;
+    }
+    hits.push(
+      detection(
+        "pronoun",
+        "whole-token",
+        text.slice(original.start, original.end),
+        original.start,
+        original.end,
+        "high",
+        { canonical: word.toLowerCase() },
+        scope,
+      ),
+    );
   }
   return hits;
 }
 
-export function observeAddresses(text: string): Detection[] {
-  const source = text.normalize("NFKC");
+export function observeAddresses(text: string, scope?: string): Detection[] {
+  const aligned = alignNfkc(text);
   const hits: Detection[] = [];
-  for (const match of source.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu)) {
+  for (const match of aligned.normalized.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu)) {
     const start = match.index;
     if (start === undefined) {
       continue;
     }
     const address = match[0];
+    const original = originalSpan(aligned, start, start + address.length);
+    if (original === null) {
+      continue;
+    }
+    const evidence = text.slice(original.start, original.end);
     const local = address.split("@")[0] ?? "";
     hits.push(
-      detection("email", "address-parse", address, start, start + address.length, "insufficient_policy", {
+      detection("email", "address-parse", evidence, original.start, original.end, "insufficient_policy", {
         digitCount: digitCount(local),
-      }),
+      }, scope),
     );
   }
   const linkedIn = /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/(?:in|pub)\/([A-Za-z0-9_%-]+)/giu;
-  for (const match of source.matchAll(linkedIn)) {
+  for (const match of aligned.normalized.matchAll(linkedIn)) {
     const start = match.index;
     const slug = match[1];
     if (start === undefined || slug === undefined) {
       continue;
     }
     const url = match[0];
+    const original = originalSpan(aligned, start, start + url.length);
+    if (original === null) {
+      continue;
+    }
     hits.push(
-      detection("linkedin", "address-parse", url, start, start + url.length, "insufficient_policy", {
-        digitCount: digitCount(slug),
-      }),
+      detection(
+        "linkedin",
+        "address-parse",
+        text.slice(original.start, original.end),
+        original.start,
+        original.end,
+        "insufficient_policy",
+        { digitCount: digitCount(slug) },
+        scope,
+      ),
     );
   }
   return hits;
 }
 
-export function observeSpecialCharacters(text: string): Detection[] {
-  const source = text.normalize("NFKC");
-  const protectedSpans = [...emailAndUrlSpans(source), ...technicalSymbolSpans(source)];
+export function observeSpecialCharacters(text: string, scope?: string): Detection[] {
+  const aligned = alignNfkc(text);
+  const protectedSpans = [...emailAndUrlSpans(aligned.normalized), ...technicalSymbolSpans(aligned.normalized)];
   const hits: Detection[] = [];
-  for (const match of source.matchAll(/[#=^!]/gu)) {
+  for (const match of aligned.normalized.matchAll(/[#=^!]/gu)) {
     const start = match.index;
     const symbol = match[0];
     if (start === undefined || symbol === undefined) {
       continue;
     }
+    const original = originalSpan(aligned, start, start + 1);
+    if (original === null) {
+      continue;
+    }
     const protectedUse = overlaps(protectedSpans, start, start + 1);
     hits.push(
-      detection("special-character", "symbol-scan", symbol, start, start + 1, protectedUse ? "protected" : "unclassified"),
+      detection(
+        "special-character",
+        "symbol-scan",
+        text.slice(original.start, original.end),
+        original.start,
+        original.end,
+        protectedUse ? "protected" : "unclassified",
+        {},
+        scope,
+      ),
     );
   }
   return hits;
@@ -218,7 +288,7 @@ export function findDuplicateBullets(bullets: readonly DuplicateBullet[]): Detec
     if (priorExact !== undefined) {
       if (!sameExtractedSource(priorExact, bullet)) {
         hits.push(
-          detection("exact-duplicate", "exact-text", exact, 0, exact.length, "high", {
+          detection("exact-duplicate", "exact-text", bullet.text, 0, bullet.text.length, "high", {
             blockId: bullet.id,
             canonical: priorExact.id,
             ...(bullet.sectionId === undefined ? {} : { sectionId: bullet.sectionId }),
@@ -231,7 +301,7 @@ export function findDuplicateBullets(bullets: readonly DuplicateBullet[]): Detec
     const priorNormalized = normalizedSeen.get(normalized);
     if (priorNormalized !== undefined && !sameExtractedSource(priorNormalized, bullet)) {
       hits.push(
-        detection("normalized-duplicate", "case-and-whitespace", exact, 0, exact.length, "high", {
+        detection("normalized-duplicate", "case-and-whitespace", bullet.text, 0, bullet.text.length, "high", {
           blockId: bullet.id,
           canonical: priorNormalized.id,
           ...(bullet.sectionId === undefined ? {} : { sectionId: bullet.sectionId }),
@@ -281,9 +351,12 @@ function detection(
   endOffset: number,
   quality: DetectionQuality,
   extra: { canonical?: string; digitCount?: number; blockId?: string; sectionId?: string; page?: number } = {},
+  scope?: string,
 ): Detection {
+  const identity = extra.blockId ?? extra.canonical ?? type;
+  const scopePart = scope === undefined || scope.length === 0 ? "" : `${scope}:`;
   return {
-    id: `${type}:${extra.blockId ?? extra.canonical ?? type}:${startOffset}:${endOffset}`,
+    id: `${type}:${scopePart}${identity}:${startOffset}:${endOffset}`,
     type,
     evidenceText,
     startOffset,
@@ -399,17 +472,100 @@ function artifactIndexes(blocks: readonly TokenBlock[]): Set<number> {
       skip.add(index);
     }
   });
+  const groups = new Map<string, number[]>();
   for (let index = 0; index < blocks.length; index += 1) {
     if (skip.has(index)) {
       continue;
     }
-    for (let earlier = 0; earlier < index; earlier += 1) {
-      if (!skip.has(earlier) && samePaintedLine(blocks[earlier], blocks[index])) {
+    const block = blocks[index];
+    if (!block) {
+      continue;
+    }
+    const text = block.text.normalize("NFKC").replace(/\s+/gu, " ").trim().toLowerCase();
+    const page = unionBox(block.boxes)?.page;
+    const key = `${page ?? "none"}\0${text}`;
+    const group = groups.get(key) ?? [];
+    group.push(index);
+    groups.set(key, group);
+  }
+  for (const indexes of groups.values()) {
+    const kept: number[] = [];
+    for (const index of indexes) {
+      if (kept.some((earlier) => samePaintedLine(blocks[earlier], blocks[index]))) {
         skip.add(index);
+        continue;
       }
+      kept.push(index);
     }
   }
   return skip;
+}
+
+interface AlignedText {
+  original: string;
+  normalized: string;
+  originalIndex: number[];
+}
+
+function alignNfkc(text: string): AlignedText {
+  const normalized = text.normalize("NFKC");
+  const originalIndex: number[] = [];
+  let originalCursor = 0;
+  let normalizedCursor = 0;
+  while (originalCursor < text.length && normalizedCursor < normalized.length) {
+    let originalEnd = originalCursor + utf16Width(text, originalCursor);
+    let piece = text.slice(originalCursor, originalEnd).normalize("NFKC");
+    while (piece.length === 0 && originalEnd < text.length) {
+      originalCursor = originalEnd;
+      originalEnd = originalCursor + utf16Width(text, originalCursor);
+      piece = text.slice(originalCursor, originalEnd).normalize("NFKC");
+    }
+    while (originalEnd < text.length && !normalized.startsWith(piece, normalizedCursor)) {
+      originalEnd += utf16Width(text, originalEnd);
+      piece = text.slice(originalCursor, originalEnd).normalize("NFKC");
+    }
+    if (!normalized.startsWith(piece, normalizedCursor) || piece.length === 0) {
+      break;
+    }
+    for (let index = 0; index < piece.length; index += 1) {
+      originalIndex.push(originalCursor);
+    }
+    originalCursor = originalEnd;
+    normalizedCursor += piece.length;
+  }
+  return {
+    original: text,
+    normalized: normalizedCursor === normalized.length ? normalized : normalized.slice(0, normalizedCursor),
+    originalIndex,
+  };
+}
+
+function originalSpan(aligned: AlignedText, start: number, end: number): Span | null {
+  if (start < 0 || end <= start || end > aligned.originalIndex.length) {
+    return null;
+  }
+  const originalStart = aligned.originalIndex[start];
+  const lastOrigin = aligned.originalIndex[end - 1];
+  if (originalStart === undefined || lastOrigin === undefined) {
+    return null;
+  }
+  let cursor = end - 1;
+  while (cursor + 1 < aligned.originalIndex.length && aligned.originalIndex[cursor + 1] === lastOrigin) {
+    cursor += 1;
+  }
+  const originalEnd = cursor + 1 < aligned.originalIndex.length ? aligned.originalIndex[cursor + 1] : aligned.original.length;
+  if (originalEnd === undefined || originalEnd <= originalStart) {
+    return null;
+  }
+  return { start: originalStart, end: originalEnd };
+}
+
+function utf16Width(text: string, index: number): number {
+  const code = text.codePointAt(index);
+  if (code === undefined) {
+    return 1;
+  }
+  return code > 0xffff ? 2 : 1;
 }
 
 function runningHeaderIndexes(blocks: readonly TokenBlock[], artifacts: ReadonlySet<number>): Set<number> {
