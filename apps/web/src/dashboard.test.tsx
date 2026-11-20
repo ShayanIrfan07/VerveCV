@@ -388,24 +388,22 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
               resumeVersionId: versionA,
               originalFilename: "First_Resume.docx",
               mimeType: resumeA.mimeType,
-              scoreStatus: "PROVISIONAL",
-              baseScore: 5,
-              denominator: 44,
-              penaltyTotal: null,
-              penaltyStatus: "not_evaluated",
-              finalScore: null,
-              rubricVersion: "rubric-2026-11-12-provisional",
-              criteria: [
-                { ruleId: "contact-information", maxScore: 4, status: "scored", score: 1 },
-                { ruleId: "readability", maxScore: 7, status: "withheld", score: null, reasonCode: "OPEN_DECISION" },
+              status: "provisional",
+              score: 5,
+              notice: "This result is provisional and is not a complete 100-point score.",
+              areas: [{ label: "Contact information", state: "review" }],
+              unavailable: [
+                {
+                  label: "Readability",
+                  explanation: "Readability is not available yet because no scoring method has been approved.",
+                },
               ],
-              jdMatch: null,
               createdAt: "2026-11-13T10:00:00.000Z",
             },
             findings: [
               {
                 id: "f-1",
-                ruleId: "grammar-spelling",
+                kind: "note",
                 message: 'Possible misspelling "Recieve".',
                 suggestion: "Receive",
                 evidence: [{ blockId: "block-1", startOffset: 0, endOffset: 7 }],
@@ -456,7 +454,9 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
     await flushAsync();
 
     expect(container.textContent).toContain('Possible misspelling "Recieve".');
-    expect(container.textContent).toContain("5/44");
+    expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("5");
+    expect(container.textContent).not.toContain("5/44");
+    expect(container.textContent).not.toContain("OPEN_DECISION");
 
     // Hover finding to activate UTF-16 highlight
     const findingBtn = Array.from(container.querySelectorAll("button")).find((btn) =>
@@ -524,11 +524,8 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
         resumeVersionId: histVersionOk,
         originalFilename: "Historical_Resume.docx",
         mimeType: historicalDoc.mimeType,
-        scoreStatus: "PROVISIONAL",
-        baseScore: 7,
-        denominator: 44,
-        penaltyStatus: "not_evaluated",
-        finalScore: null,
+        status: "provisional" as const,
+        score: 7,
         createdAt: "2026-11-13T09:00:00.000Z",
       },
       {
@@ -537,11 +534,8 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
         resumeVersionId: histVersionMissing,
         originalFilename: "Unavailable_Resume.docx",
         mimeType: historicalDoc.mimeType,
-        scoreStatus: "PROVISIONAL",
-        baseScore: 3,
-        denominator: 44,
-        penaltyStatus: "not_evaluated",
-        finalScore: null,
+        status: "provisional" as const,
+        score: 3,
         createdAt: "2026-11-13T08:00:00.000Z",
       },
     ];
@@ -565,17 +559,14 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
           JSON.stringify({
             evaluation: {
               ...historyItems[0],
-              penaltyTotal: null,
-              rubricVersion: "rubric-2026-11-12-provisional",
-              criteria: [
-                { ruleId: "contact-information", maxScore: 4, status: "scored", score: 3 },
-              ],
-              jdMatch: null,
+              notice: "This result is provisional and is not a complete 100-point score.",
+              areas: [{ label: "Contact information", state: "review" }],
+              unavailable: [],
             },
             findings: [
               {
                 id: "hist-f1",
-                ruleId: "grammar-spelling",
+                kind: "note",
                 message: 'Possible misspelling "recieve".',
                 evidence: [{ blockId: "block-1", startOffset: 23, endOffset: 30 }],
               },
@@ -601,12 +592,9 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
           JSON.stringify({
             evaluation: {
               ...historyItems[1],
-              penaltyTotal: null,
-              rubricVersion: "rubric-2026-11-12-provisional",
-              criteria: [
-                { ruleId: "contact-information", maxScore: 4, status: "scored", score: 1 },
-              ],
-              jdMatch: null,
+              notice: "This result is provisional and is not a complete 100-point score.",
+              areas: [{ label: "Contact information", state: "review" }],
+              unavailable: [],
             },
             findings: [],
           }),
@@ -681,7 +669,8 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
     });
     await flushAsync();
 
-    expect(container.textContent).toContain("7/44");
+    expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("7");
+    expect(container.textContent).not.toContain("7/44");
     expect(container.textContent).toContain("Historical bullet with recieve typo");
     expect(container.textContent).not.toContain("Current local bullet");
 
@@ -707,7 +696,8 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
     });
     await flushAsync();
 
-    expect(container.textContent).toContain("3/44");
+    expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("3");
+    expect(container.textContent).not.toContain("3/44");
     expect(
       container.querySelector('[data-testid="preview-unavailable-notice"]')?.textContent,
     ).toContain("Original resume file is unavailable for preview");

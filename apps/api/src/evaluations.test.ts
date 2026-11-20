@@ -131,7 +131,7 @@ function emitPrematureResponseClose(reply: NodeJS.EventEmitter | undefined): voi
 
 describe("evaluation dashboard API", () => {
   it("scores only server-verified resume bytes, enforces fingerprint idempotency (200 replay vs 409 conflict), and isolates users", async () => {
-    const { app, client, storage } = await createTestApp();
+    const { app, client, storage, pgliteDb } = await createTestApp();
     const owner = await sessionFor(app, "owner@example.com");
     const other = await sessionFor(app, "other@example.com");
 
@@ -187,41 +187,56 @@ describe("evaluation dashboard API", () => {
         resumeId: string;
         resumeVersionId: string;
         originalFilename: string;
-        scoreStatus: string;
-        baseScore: number;
-        denominator: number;
-        penaltyTotal: number | null;
-        penaltyStatus: string;
-        finalScore: number | null;
-        criteria: Array<{ status: string; score: number | null; maxScore: number }>;
-        jdMatch: { status: string; appliedToScore: boolean } | null;
+        status: string;
+        score: number;
+        notice: string;
+        areas: Array<{ label: string; state: string }>;
+        unavailable: Array<{ label: string; explanation: string }>;
       };
+      findings: Array<{ kind: string; message: string }>;
       job: { id: string; status: string };
     }>();
 
     expect(body.evaluation.resumeId).toBe(verified.resumeId);
     expect(body.evaluation.resumeVersionId).toBe(verified.versionId);
     expect(body.evaluation.originalFilename).toBe("AdaLovelace_Resume.pdf");
-    expect(body.evaluation.scoreStatus).toBe("PROVISIONAL");
-    expect(body.evaluation.penaltyTotal).toBeNull();
-    expect(body.evaluation.penaltyStatus).toBe("not_evaluated");
-    expect(body.evaluation.finalScore).toBeNull();
-    expect(body.evaluation.baseScore).toBeLessThanOrEqual(body.evaluation.denominator);
-    expect(body.evaluation.denominator).toBeLessThan(100);
-    expect(body.evaluation.jdMatch).toEqual({ status: "not_implemented", appliedToScore: false });
+    expect(body.evaluation.status).toBe("provisional");
+    expect(body.evaluation.score).toEqual(expect.any(Number));
+    expect(body.evaluation.notice).toBe("This result is provisional and is not a complete 100-point score.");
+    expect(body.evaluation.areas.length).toBeGreaterThan(0);
+    expect(body.evaluation.unavailable.some((item) => item.label === "Job description comparison")).toBe(true);
     expect(body.job.status).toBe("succeeded");
-
-    const scoredMax = body.evaluation.criteria.reduce(
-      (sum, criterion) => sum + (criterion.status === "scored" ? criterion.maxScore : 0),
-      0,
-    );
-    expect(body.evaluation.denominator).toBe(scoredMax);
-    for (const criterion of body.evaluation.criteria) {
-      if (criterion.status === "scored" && criterion.score !== null) {
-        expect(criterion.score).toBeGreaterThanOrEqual(0);
-        expect(criterion.score).toBeLessThanOrEqual(criterion.maxScore);
-      }
+    const responseText = created.body;
+    for (const token of [
+      "OPEN_DECISION",
+      "UNRESOLVED_BAND",
+      "DICTIONARY_UNAVAILABLE",
+      "MISSING_CANDIDATE_TYPE",
+      "rubric-2026",
+      "not_implemented",
+      "not_evaluated",
+      "appliedToScore",
+      "ruleId",
+      "maxScore",
+      "reasonCode",
+      "penaltyId",
+      "denominator",
+      "rubricVersion",
+      "parserVersion",
+      "PROVISIONAL",
+    ]) {
+      expect(responseText).not.toContain(token);
     }
+
+    const stored = await pgliteDb
+      .select({
+        rubricVersion: schema.evaluations.rubricVersion,
+        categoriesJson: schema.evaluations.categoriesJson,
+      })
+      .from(schema.evaluations);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.rubricVersion).toContain("rubric-");
+    expect(JSON.stringify(stored[0]?.categoriesJson)).toContain("ruleId");
 
     // Identical replay (canonicalized whitespace in jobDescription) returns the original evaluation
     const identicalReplay = await app.inject({
@@ -553,6 +568,8 @@ describe("evaluation dashboard API", () => {
       pagination: { limit: number; offset: number; hasMore: boolean; nextOffset: number | null };
     }>();
     expect(p1.evaluations).toHaveLength(2);
+    expect(page1.body).not.toContain("denominator");
+    expect(page1.body).not.toContain("rubricVersion");
     expect(p1.pagination).toEqual({
       limit: 2,
       offset: 0,
@@ -620,8 +637,8 @@ describe("evaluation dashboard API", () => {
       }, options)) as typeof parseGate.run;
     const benign = await score("eval-benign-close");
     expect(benign.statusCode).toBe(200);
-    const benignId = benign.json<{ evaluation: { id: string; scoreStatus: string } }>().evaluation;
-    expect(benignId.scoreStatus).toBe("PROVISIONAL");
+    const benignId = benign.json<{ evaluation: { id: string; status: string } }>().evaluation;
+    expect(benignId.status).toBe("provisional");
 
     parseGate.run = ((work, options) =>
       originalRun(async (signal) => {

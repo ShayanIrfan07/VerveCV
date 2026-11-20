@@ -12,20 +12,20 @@ function evaluation(overrides: Partial<ScoreView> = {}): ScoreView {
     resumeId: "resume-1",
     resumeVersionId: "version-1",
     originalFilename: "MinaKapoor_CV.pdf",
-    scoreStatus: "PROVISIONAL",
-    baseScore: 13,
-    denominator: 13,
-    penaltyTotal: null,
-    penaltyStatus: "not_evaluated",
-    finalScore: null,
-    rubricVersion: "rubric-2026-11-12-provisional",
-    criteria: [
-      { ruleId: "required-sections", maxScore: 4, status: "scored", score: 4 },
-      { ruleId: "contact-information", maxScore: 4, status: "scored", score: 4 },
-      { ruleId: "unique-skills", maxScore: 5, status: "scored", score: 5 },
-      { ruleId: "readability", maxScore: 7, status: "withheld", score: null, reasonCode: "OPEN_DECISION" },
+    status: "provisional",
+    score: 13,
+    notice: "This result is provisional and is not a complete 100-point score.",
+    areas: [
+      { label: "Required sections", state: "passed" },
+      { label: "Contact information", state: "passed" },
+      { label: "Unique skills", state: "passed" },
     ],
-    jdMatch: { status: "not_implemented", appliedToScore: false },
+    unavailable: [
+      {
+        label: "Readability",
+        explanation: "Readability is not available yet because no scoring method has been approved.",
+      },
+    ],
     createdAt: "2026-11-17T00:00:00.000Z",
     ...overrides,
   };
@@ -66,14 +66,17 @@ describe("resume analysis panel", () => {
     expect(container.querySelector("section")?.className).toContain("bg-card");
     expect(container.textContent).toContain("Resume analysis");
     expect(container.textContent).toContain("MinaKapoor_CV.pdf");
-    expect(container.textContent).toContain("13/13");
-    expect(container.textContent).toContain("Evaluated");
+    expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("13");
+    expect(container.textContent).toContain("Provisional");
+    expect(container.textContent).toContain("not a complete 100-point score");
+    expect(container.textContent).not.toContain("13/13");
     expect(container.textContent).toContain("3 checks passed");
     expect(container.textContent).toContain("Required sections");
-    expect(container.textContent).toContain("4/4");
+    expect(container.textContent).toContain("Passed");
     expect(container.textContent).toContain("Contact information");
     expect(container.textContent).toContain("Unique skills");
-    expect(container.textContent).toContain("5/5");
+    expect(container.textContent).not.toContain("4/4");
+    expect(container.textContent).not.toContain("5/5");
     expect(container.textContent).toContain(
       "No confirmed issues in the scored checks. Other checks are not yet available.",
     );
@@ -105,13 +108,13 @@ describe("resume analysis panel", () => {
     const findings: ScoreFinding[] = [
       {
         id: "phone",
-        ruleId: "contact-phone",
+        kind: "issue",
         message: "A phone number was not found.",
         evidence: [{ blockId: "block-1", startOffset: 0, endOffset: 4 }],
       },
       {
         id: "spell",
-        ruleId: "grammar-spelling",
+        kind: "note",
         message: 'Possible misspelling "Recieve".',
         suggestion: "Receive",
         evidence: [{ blockId: "block-2", startOffset: 1, endOffset: 8 }],
@@ -122,13 +125,11 @@ describe("resume analysis panel", () => {
       <ScorePanel
         activeHighlight={null}
         evaluation={evaluation({
-          baseScore: 11,
-          denominator: 13,
-          criteria: [
-            { ruleId: "required-sections", maxScore: 4, status: "scored", score: 4 },
-            { ruleId: "contact-information", maxScore: 4, status: "scored", score: 2 },
-            { ruleId: "unique-skills", maxScore: 5, status: "scored", score: 5 },
-            { ruleId: "readability", maxScore: 7, status: "withheld", score: null, reasonCode: "OPEN_DECISION" },
+          score: 11,
+          areas: [
+            { label: "Required sections", state: "passed" },
+            { label: "Contact information", state: "review" },
+            { label: "Unique skills", state: "passed" },
           ],
         })}
         findings={findings}
@@ -136,9 +137,11 @@ describe("resume analysis panel", () => {
       />,
     );
 
-    expect(container.textContent).toContain("11/13");
+    expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("11");
+    expect(container.textContent).not.toContain("11/13");
     expect(container.textContent).toContain("2 checks passed");
-    expect(container.textContent).toContain("2/4");
+    expect(container.textContent).toContain("Review");
+    expect(container.textContent).not.toContain("2/4");
     expect(container.textContent).toContain("A phone number was not found.");
     expect(container.textContent).not.toContain("No confirmed issues");
     expect(container.textContent).toContain('Possible misspelling "Recieve".');

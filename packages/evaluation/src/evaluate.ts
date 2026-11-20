@@ -1,5 +1,6 @@
 import { uniqueSkillScore } from "./bands.js";
 import { isTechnicalTerm } from "./technical-terms.js";
+import { formattingConsistencyRule } from "./formatting.js";
 import { grammarAndSpellingRule, punctuationRule, type SpellChecker } from "./grammar.js";
 import type {
   EvaluationFinding,
@@ -70,7 +71,6 @@ const BULLET_RULES = [
 const WITHHELD_RULES: Array<[string, number, RuleWithholdReasonCode]> = [
   ["section-ordering", CRITERION_MAXIMA.sectionOrdering, "OPEN_DECISION"],
   ["reverse-chronology", CRITERION_MAXIMA.reverseChronology, "OPEN_DECISION"],
-  ["formatting-consistency", CRITERION_MAXIMA.formattingConsistency, "OPEN_DECISION"],
   ["readability", CRITERION_MAXIMA.readability, "OPEN_DECISION"],
   ["entry-details", CRITERION_MAXIMA.entryDetails, "OPEN_DECISION"],
   ["education-details", CRITERION_MAXIMA.educationDetails, "OPEN_DECISION"],
@@ -88,6 +88,7 @@ export function evaluate(document: ResumeDocument, options: EvaluationOptions): 
       spellChecker: options.spellChecker,
     }),
     punctuationRule(document),
+    formattingConsistencyRule(document),
     ...WITHHELD_RULES.map(([ruleId, maxScore, reasonCode]) => withheld(ruleId, maxScore, reasonCode)),
     requiredSections(document, options.candidateType),
     contactInformation(document, options.candidateName, detectCandidateName(document)),
