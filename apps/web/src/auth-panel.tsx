@@ -5,6 +5,7 @@ import { card, field, primaryButton, secondaryButton } from "./ui";
 interface AuthPanelProps {
   user: SessionUser | null;
   onUser: (user: SessionUser | null) => void;
+  compact?: boolean;
 }
 
 interface AuthBody {
@@ -12,10 +13,11 @@ interface AuthBody {
   error?: { message?: string; requestId?: string };
 }
 
-export function AuthPanel({ user, onUser }: AuthPanelProps) {
+export function AuthPanel({ user, onUser, compact = false }: AuthPanelProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
@@ -118,7 +120,7 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
 
   if (user) {
     return (
-      <section className={card}>
+      <section className={compact ? "px-1 text-sm text-body" : card}>
         <h2 className="text-lg font-semibold text-ink">Account</h2>
         <p className="mt-2 break-all text-muted">{user.email}</p>
         <button
@@ -155,12 +157,19 @@ export function AuthPanel({ user, onUser }: AuthPanelProps) {
             className={field}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            type="password"
+            type={showPassword ? "text" : "password"}
             autoComplete="current-password"
             minLength={8}
             required
           />
         </label>
+        <button
+          className="min-h-11 justify-self-start text-sm font-semibold text-primary"
+          onClick={() => setShowPassword((current) => !current)}
+          type="button"
+        >
+          {showPassword ? "Hide password" : "Show password"}
+        </button>
         <label className="grid gap-1 text-sm text-muted">
           Display name
           <input

@@ -156,4 +156,26 @@ describe("resume analysis panel", () => {
     expect(onHighlight).toHaveBeenCalled();
     cleanup();
   });
+
+  it("shows an unavailable score without a denominator or private scoring terms", () => {
+    const { container, cleanup } = renderPanel(
+      <ScorePanel
+        activeHighlight={null}
+        evaluation={evaluation({
+          score: null,
+          notice: "A final score is not available.",
+        })}
+        findings={[]}
+        onHighlight={() => undefined}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("—");
+    expect(container.textContent).toContain("Unavailable");
+    expect(container.textContent).not.toContain("/100");
+    expect(container.textContent).not.toContain("OPEN_DECISION");
+    expect(container.textContent).not.toContain("rubric-2026-11-12-provisional");
+    expect(container.textContent).not.toContain("DETECTOR_VERSION");
+    cleanup();
+  });
 });

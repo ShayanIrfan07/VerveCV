@@ -93,15 +93,25 @@ export function ScorePanel({
         <p className="mt-2 max-w-full truncate text-sm text-muted">{evaluation.originalFilename}</p>
       ) : null}
 
-      <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center">
-        <div className="grid h-28 w-28 shrink-0 place-items-center rounded-full border border-primary text-center">
+      <div className="mt-6 flex flex-col gap-4 rounded-2xl bg-hero p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-xs font-bold tracking-wide text-primary-bright">RESUME OVERVIEW</p>
+          {evaluation.score === null ? (
+            <p className="mt-2 inline-flex rounded-md bg-warn-bg px-2 py-1 text-sm font-semibold text-warn">Partial evaluation</p>
+          ) : null}
+        </div>
+        <div className="grid h-36 w-36 shrink-0 place-items-center rounded-full border-8 border-[#DDD6FE] bg-card text-center">
           <span>
-            <span className="block text-xl font-semibold text-primary" data-testid="analysis-score">
+            <span className="block text-3xl font-semibold text-primary" data-testid="analysis-score">
               {scoreText}
             </span>
-            <span className="mt-0.5 block text-xs text-muted">{statusLabel}</span>
+            <span className="mt-0.5 block text-xs text-muted">
+              {evaluation.score === null ? "Unavailable" : statusLabel}
+            </span>
           </span>
         </div>
+      </div>
+      <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center">
         <div className="min-w-0">
           <p className="text-base font-semibold text-ink">
             {passed.length} {passed.length === 1 ? "check" : "checks"} passed
@@ -205,8 +215,8 @@ export function HistoryList({
   onLoadMore?: () => void;
 }) {
   return (
-    <section className="rounded-2xl border border-line bg-card p-5 text-ink">
-      <h2 className="text-lg font-semibold text-ink">Score history</h2>
+    <section className="rounded-xl border border-line bg-card p-6 text-ink">
+      <h2 className="text-lg font-semibold text-ink">My resumes</h2>
       {items.length === 0 ? <p className="mt-2 text-sm text-muted">No scores yet.</p> : null}
       <ul className="mt-3 grid gap-2">
         {items.map((item) => {

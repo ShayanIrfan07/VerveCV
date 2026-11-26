@@ -46,9 +46,11 @@ export type LocalExtractor = (
 export function UploadPanel({
   user,
   extractDocument = extractLocally,
+  focus,
 }: {
   user: SessionUser | null;
   extractDocument?: LocalExtractor;
+  focus?: "dashboard" | "analyze" | "history";
 }) {
   const [status, setStatus] = useState(
     "Choose a PDF or DOCX file. The preview is extracted in your browser.",
@@ -63,6 +65,8 @@ export function UploadPanel({
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyPagination, setHistoryPagination] = useState<HistoryPagination | null>(null);
   const [highlight, setHighlight] = useState<EvidenceLocator | null>(null);
+  const [selectedFile, setSelectedFile] = useState<{ name: string; bytes: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
 
   // Monotonic operation token prevents late async completions from overwriting newer file selections or history views.
   const operationSeqRef = useRef(0);
@@ -78,6 +82,7 @@ export function UploadPanel({
     setHighlight(null);
     setPreviewUnavailableReason(null);
     setPreviewSession(null);
+    setSelectedFile(null);
   }
 
   async function onFile(file: File | null) {
@@ -124,9 +129,11 @@ export function UploadPanel({
     data: Uint8Array,
   ) {
     if (data.byteLength > UPLOAD_LIMIT_BYTES) {
+      setSelectedFile(null);
       setStatus("The file is larger than the 5 MiB upload limit.");
       return;
     }
+    setSelectedFile({ name: filename, bytes: data.byteLength });
 
     setStatus("Reading the file in your browser.");
     let document: ResumeDocument;
@@ -453,13 +460,75 @@ export function UploadPanel({
     (!evaluation || previewSession.versionId === evaluation.resumeVersionId)
       ? previewSession
       : null;
+  const showDashboard = focus === undefined || focus === "dashboard";
+  const showAnalyze = focus === undefined || focus === "analyze";
+  const showHistory = focus === undefined || focus === "history" || focus === "dashboard";
+  const countsReady = historyPagination !== null && historyPagination.hasMore === false;
+  const completedCount = history.filter((item) => item.status === "complete").length;
+  const latest = history[0];
 
   return (
-    <section className="grid min-w-0 gap-4">
-      <div className={card}>
-        <h2 className="text-lg font-semibold text-ink">Resume</h2>
+    <section className="grid min-w-0 gap-5">
+      {showDashboard && user ? (
+        <div className="grid gap-5">
+          <header>
+            <p className="text-sm text-muted">Workspace / Dashboard</p>
+            <h1 className="mt-2 text-3xl font-semibold text-ink">
+              Welcome back{user.displayName ? `, ${user.displayName}` : ""}.
+            </h1>
+            <p className="mt-2 text-body">Manage your resumes and review the checks that are ready.</p>
+          </header>
+          <div className="rounded-2xl bg-hero p-6 text-[#6B5C85] sm:p-8">
+            <p className="text-xs font-bold tracking-wide text-primary-bright">YOUR NEXT CAREER MOVE</p>
+            <h2 className="mt-2 text-3xl font-semibold text-[#21143D]">Build a stronger resume.</h2>
+            <p className="mt-2 max-w-xl">Discover the feedback the server can already support.</p>
+          </div>
+          <div className="grid gap-5 md:grid-cols-3">
+            <article className={card}>
+              <h2 className="text-3xl font-semibold text-ink">{countsReady ? history.length : "—"}</h2>
+              <p className="text-sm text-muted">Total resumes</p>
+            </article>
+            <article className={card}>
+              <h2 className="text-3xl font-semibold text-ink">{countsReady ? completedCount : "—"}</h2>
+              <p className="text-sm text-muted">Completed</p>
+            </article>
+            <article className={card}>
+              <h2 className="text-3xl font-semibold text-ink">
+                {countsReady && latest ? (latest.score ?? "—") : "—"}
+              </h2>
+              <p className="text-sm text-muted">Latest score</p>
+            </article>
+          </div>
+          {countsReady ? null : (
+            <p className="text-sm text-muted">Totals stay hidden until every resume on this account has been loaded.</p>
+          )}
+        </div>
+      ) : null}
+
+      {showAnalyze ? (
+      <div
+        className={`${card} ${dragging ? "border-primary bg-primary-muted" : ""}`}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          void onFile(event.dataTransfer.files[0] ?? null);
+        }}
+      >
+        <h2 className="text-2xl font-semibold text-ink">New resume analysis</h2>
         <p className="mt-2 text-sm leading-6 text-muted">{status}</p>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 rounded-xl border-2 border-dashed border-[#C4B5FD] bg-[#FAF9FF] px-5 py-12 text-center">
+          <h3 className="text-xl font-semibold text-ink">Drag and drop your resume</h3>
+          <p className="mt-1 text-sm text-muted">or browse files from your device</p>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
           <label className={primaryButton}>
             Choose file
             <input
@@ -487,10 +556,21 @@ export function UploadPanel({
           >
             Preview sample DOCX
           </button>
+          </div>
+          <p className="mt-3 text-sm text-muted">PDF and DOCX, up to 5 MiB</p>
         </div>
+        {selectedFile ? (
+          <p className="mt-4 text-sm text-body">
+            Selected file: {selectedFile.name} ({selectedFile.bytes} bytes)
+          </p>
+        ) : null}
+        <p className="mt-4 rounded-lg bg-info-bg px-4 py-3 text-sm text-info">
+          Your resume is subject to the 90-day retention policy.
+        </p>
       </div>
+      ) : null}
 
-      {versionId ? (
+      {showAnalyze && versionId ? (
         <form
           className={card}
           onSubmit={(event) => {
@@ -532,20 +612,35 @@ export function UploadPanel({
         </form>
       ) : null}
 
-      {evaluation ? (
-        <ScorePanel
-          activeHighlight={highlight}
-          evaluation={evaluation}
-          findings={findings}
-          onHighlight={setHighlight}
-          onPreview={() => {
-            document.getElementById("resume-preview")?.scrollIntoView({ block: "nearest" });
-          }}
-          previewUnavailableReason={previewUnavailableReason}
-        />
+      {showAnalyze && (evaluation || visiblePreview) ? (
+        <div className="grid min-w-0 gap-5 lg:grid-cols-2">
+          {visiblePreview ? (
+            <div className="order-2 min-w-0 lg:order-1" id="resume-preview">
+              <PreviewView
+                document={visiblePreview.document}
+                fileBytes={visiblePreview.bytes}
+                highlight={highlight}
+              />
+            </div>
+          ) : null}
+          {evaluation ? (
+            <div className="order-1 min-w-0 lg:order-2">
+              <ScorePanel
+                activeHighlight={highlight}
+                evaluation={evaluation}
+                findings={findings}
+                onHighlight={setHighlight}
+                onPreview={() => {
+                  document.getElementById("resume-preview")?.scrollIntoView({ block: "nearest" });
+                }}
+                previewUnavailableReason={previewUnavailableReason}
+              />
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
-      {user ? (
+      {showHistory && user ? (
         <HistoryList
           activeEvaluationId={evaluation?.id ?? null}
           hasMore={historyPagination?.hasMore ?? false}
@@ -557,16 +652,6 @@ export function UploadPanel({
           }
           onOpen={(item) => void openHistory(item)}
         />
-      ) : null}
-
-      {visiblePreview ? (
-        <div id="resume-preview">
-        <PreviewView
-          document={visiblePreview.document}
-          fileBytes={visiblePreview.bytes}
-          highlight={highlight}
-        />
-        </div>
       ) : null}
     </section>
   );

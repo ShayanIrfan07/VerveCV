@@ -549,7 +549,7 @@ function PdfPage({
 
   return (
     <div
-      className="relative mx-auto w-full max-w-full bg-slate-100"
+      className="relative mx-auto w-full max-w-full border border-[#CBD5E1] bg-white"
       style={{ maxWidth: width * SCALE, aspectRatio: `${width} / ${height}` }}
     >
       <canvas className="absolute inset-0 h-full w-full" ref={setCanvas} />
