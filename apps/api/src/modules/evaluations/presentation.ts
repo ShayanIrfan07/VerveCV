@@ -231,6 +231,12 @@ function explanationFor(criterion: StoredCriterion): string {
   if (criterion.reasonCode === "DICTIONARY_UNAVAILABLE") {
     return "Spelling could not be checked, so this criterion has not been evaluated.";
   }
+  if (criterion.ruleId === "minimum-bullets-per-role") {
+    return "This check could not be completed from the roles on this resume.";
+  }
+  if (criterion.reasonCode === "UNRESOLVED_BAND") {
+    return "This check could not be completed for this result.";
+  }
   return UNAVAILABLE_EXPLANATIONS[criterion.ruleId] ?? CHECK_UNAVAILABLE;
 }
 

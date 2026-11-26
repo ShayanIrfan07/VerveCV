@@ -276,10 +276,14 @@ describe("evaluate", () => {
     }
   });
 
-  it("withholds bullet criteria once five bullets exist because the recognizers are not approved", () => {
+  it("scores five short action-verb bullets and withholds role counts when no role can be read", () => {
     const result = evaluate(resumeWithBullets(5, "Led the migration."), options);
-    const rule = result.criteria.find((item) => item.ruleId === "bullet-length");
-    expect(rule?.status).toBe("withheld");
+    expect(ruleScore(result, "bullet-length")).toBe(0);
+    expect(ruleScore(result, "action-verbs")).toBe(10);
+    expect(ruleScore(result, "quantified-metrics")).toBe(0);
+    expect(ruleScore(result, "impact-metrics")).toBe(0);
+    expect(result.criteria.find((item) => item.ruleId === "minimum-bullets-per-role")?.status).toBe("withheld");
+    expect(result.finalScore).toBeNull();
   });
 
   it("awards one contact point per present field", () => {

@@ -1,6 +1,11 @@
-import { keywordMatchScore, uniqueSkillScore } from "./bands.js";
+import { opensWithActionVerb } from "./action-verbs.js";
+import { actionVerbScore, bulletLengthScore, impactScore, keywordMatchScore, quantifiedMetricScore, uniqueSkillScore } from "./bands.js";
+import { assessBulletQuality } from "./bullets.js";
 import { matchEntryBullets, type KeywordDictionary } from "./detectors.js";
 import { parseEntries } from "./entries.js";
+import { hasMeasurableImpact } from "./impact.js";
+import { hasMeaningfulQuantity } from "./quantities.js";
+import { measureRoles } from "./roles.js";
 import { isTechnicalTerm } from "./technical-terms.js";
 import { formattingConsistencyRule } from "./formatting.js";
 import { grammarAndSpellingRule, punctuationRule, type SpellChecker } from "./grammar.js";
@@ -9,7 +14,6 @@ import type {
   EvidenceReference,
   ResumeBlock,
   ResumeDocument,
-  ResumeSection,
   ResumeSectionKind,
   RuleResult,
   RuleWithholdReasonCode,
@@ -67,7 +71,6 @@ const SKILL_ALIASES: Record<string, string> = {
   reactjs: "react",
 };
 
-const BULLET_SECTIONS = new Set<ResumeSectionKind>(["WORK_EXPERIENCE", "LEADERSHIP_EXPERIENCE", "PROJECTS"]);
 const BULLET_RULES = [
   ["bullet-length", CRITERION_MAXIMA.bulletLength],
   ["action-verbs", CRITERION_MAXIMA.actionVerbs],
@@ -155,8 +158,8 @@ export function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 function bulletCriteria(document: ResumeDocument): RuleResult[] {
-  const eligible = eligibleBullets(document).length;
-  if (eligible < 5) {
+  const assessment = assessBulletQuality(document);
+  if (assessment.unlock === "below-minimum") {
     const finding = findingFor(
       "bullet-unlock",
       "bulletQuality",
@@ -164,7 +167,114 @@ function bulletCriteria(document: ResumeDocument): RuleResult[] {
     );
     return BULLET_RULES.map(([ruleId, maxScore]) => scored(ruleId, maxScore, 0, [finding]));
   }
-  return BULLET_RULES.map(([ruleId, maxScore]) => withheld(ruleId, maxScore, "OPEN_DECISION"));
+  const byId = new Map(document.blocks.map((block) => [block.id, block]));
+  const measured = assessment.length.readings
+    .map((reading) => byId.get(reading.blockId))
+    .filter((block): block is ResumeBlock => block !== undefined);
+  return [
+    lengthCriterion(assessment.length.readings, measured),
+    verbCriterion(measured),
+    quantityCriterion(measured),
+    impactCriterion(measured),
+    roleCriterion(document),
+  ];
+}
+
+function lengthCriterion(readings: ReadonlyArray<{ blockId: string; meetsMinimum: boolean }>, blocks: readonly ResumeBlock[]): RuleResult {
+  const maxScore = CRITERION_MAXIMA.bulletLength;
+  if (readings.length === 0) {
+    return scored("bullet-length", maxScore, 0, []);
+  }
+  const band = bulletLengthScore((readings.filter((reading) => reading.meetsMinimum).length / readings.length) * 100);
+  if (band.status === "withheld") {
+    return withheld("bullet-length", maxScore, "UNRESOLVED_BAND");
+  }
+  return scored(
+    "bullet-length",
+    maxScore,
+    band.score,
+    findingsFor(blocks.filter((_, index) => readings[index]?.meetsMinimum === false), "bullet-length", "This bullet is shorter than the length check allows."),
+  );
+}
+
+function verbCriterion(blocks: readonly ResumeBlock[]): RuleResult {
+  const maxScore = CRITERION_MAXIMA.actionVerbs;
+  return percentCriterion(blocks, maxScore, "action-verbs", (block) => opensWithActionVerb(block.text), actionVerbScore, "Start this bullet with an action verb.");
+}
+
+function quantityCriterion(blocks: readonly ResumeBlock[]): RuleResult {
+  const maxScore = CRITERION_MAXIMA.quantifiedMetrics;
+  const hits = blocks.filter((block) => hasMeaningfulQuantity(block.text)).length;
+  const percent = blocks.length === 0 ? 0 : (hits / blocks.length) * 100;
+  const band = quantifiedMetricScore(percent);
+  if (band.status === "withheld") {
+    return withheld("quantified-metrics", maxScore, "UNRESOLVED_BAND");
+  }
+  const findings = band.score === maxScore
+    ? []
+    : findingsFor(blocks.filter((block) => !hasMeaningfulQuantity(block.text)), "quantified-metrics", "This bullet does not include a measurable quantity.");
+  return scored("quantified-metrics", maxScore, band.score, findings);
+}
+
+function impactCriterion(blocks: readonly ResumeBlock[]): RuleResult {
+  const maxScore = CRITERION_MAXIMA.impactMetrics;
+  const quantified = blocks.filter((block) => hasMeaningfulQuantity(block.text));
+  const impacted = quantified.filter((block) => hasMeasurableImpact(block.text));
+  const quantifiedPercent = blocks.length === 0 ? 0 : (quantified.length / blocks.length) * 100;
+  const impactPercent = quantified.length === 0 ? 0 : (impacted.length / quantified.length) * 100;
+  const band = impactScore(quantifiedPercent, impactPercent);
+  if (band.status === "withheld") {
+    return withheld("impact-metrics", maxScore, "UNRESOLVED_BAND");
+  }
+  const weak = blocks.filter((block) => !hasMeasurableImpact(block.text) && (hasMeaningfulQuantity(block.text) || /\b(?:improv|reduc|increas)/iu.test(block.text)));
+  return scored("impact-metrics", maxScore, band.score, band.score === maxScore ? [] : findingsFor(weak, "impact-metrics", "This bullet does not state a measurable outcome."));
+}
+
+function roleCriterion(document: ResumeDocument): RuleResult {
+  const maxScore = CRITERION_MAXIMA.minimumBulletsPerRole;
+  const measured = measureRoles(document);
+  if (measured === null || measured.band.status === "withheld") {
+    return withheld("minimum-bullets-per-role", maxScore, measured === null ? "OPEN_DECISION" : "UNRESOLVED_BAND");
+  }
+  const byId = new Map(document.blocks.map((block) => [block.id, block]));
+  const blocks = measured.shortBlockIds
+    .map((id) => byId.get(id))
+    .filter((block): block is ResumeBlock => block !== undefined);
+  return scored(
+    "minimum-bullets-per-role",
+    maxScore,
+    measured.band.score,
+    measured.band.score === maxScore ? [] : findingsFor(blocks, "minimum-bullets-per-role", "This role has fewer bullets than the check allows."),
+  );
+}
+
+function percentCriterion(
+  blocks: readonly ResumeBlock[],
+  maxScore: number,
+  ruleId: string,
+  passes: (block: ResumeBlock) => boolean,
+  scoreBand: (percent: number) => { status: "scored"; score: number } | { status: "withheld" },
+  message: string,
+): RuleResult {
+  const percent = blocks.length === 0 ? 0 : (blocks.filter(passes).length / blocks.length) * 100;
+  const band = scoreBand(percent);
+  if (band.status === "withheld") {
+    return withheld(ruleId, maxScore, "UNRESOLVED_BAND");
+  }
+  return scored(ruleId, maxScore, band.score, band.score === maxScore ? [] : findingsFor(blocks.filter((block) => !passes(block)), ruleId, message));
+}
+
+function findingsFor(blocks: readonly ResumeBlock[], ruleId: string, message: string): EvaluationFinding[] {
+  return blocks.map((block) => ({
+    id: `${ruleId}:${block.id}`,
+    ruleId,
+    category: "bulletQuality",
+    severity: "warning" as const,
+    message,
+    confidence: "high" as const,
+    evidence: [{ blockId: block.id, startOffset: 0, endOffset: block.text.length, ...(block.page === undefined ? {} : { page: block.page }) }],
+    status: "active" as const,
+  }));
 }
 
 function requiredSections(document: ResumeDocument, candidateType: CandidateType | null): RuleResult {
@@ -262,15 +372,6 @@ function filenameRule(
       "The filename contains the candidate name, but it does not match an approved pattern, so these points are not available.",
     ),
   ]);
-}
-
-function eligibleBullets(document: ResumeDocument): ResumeBlock[] {
-  const sections = new Map(document.sections.map((section) => [section.id, section]));
-  return document.blocks.filter((block) => block.type === "bullet" && isBulletSection(sections.get(block.sectionId)));
-}
-
-function isBulletSection(section: ResumeSection | undefined): boolean {
-  return section !== undefined && BULLET_SECTIONS.has(section.kind);
 }
 
 function contactBlocks(document: ResumeDocument): ResumeBlock[] {

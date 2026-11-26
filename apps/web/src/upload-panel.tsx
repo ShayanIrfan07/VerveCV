@@ -732,6 +732,7 @@ export function UploadPanel({
                 findings={findings}
                 onHighlight={setHighlight}
                 previewUnavailableReason={previewUnavailableReason}
+                sourceBlocks={visiblePreview ? sourceBlocksFrom(visiblePreview.document) : undefined}
               />
             </div>
           </div>
@@ -910,6 +911,7 @@ export function UploadPanel({
                 evaluation={evaluation}
                 findings={findings}
                 onHighlight={setHighlight}
+                sourceBlocks={visiblePreview ? sourceBlocksFrom(visiblePreview.document) : undefined}
                 onPreview={() => {
                   document.getElementById("resume-preview")?.scrollIntoView({ block: "nearest" });
                 }}
@@ -947,6 +949,14 @@ export function UploadPanel({
       ) : null}
     </section>
   );
+}
+
+function sourceBlocksFrom(document: ResumeDocument) {
+  return document.blocks.map((block) => ({
+    id: block.id,
+    text: block.text,
+    ...(typeof block.page === "number" ? { page: block.page } : {}),
+  }));
 }
 
 function extractLocally(

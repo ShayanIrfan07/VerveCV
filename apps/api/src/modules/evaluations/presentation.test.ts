@@ -140,6 +140,61 @@ describe("public evaluation presentation", () => {
     expect(JSON.stringify(findings)).not.toContain("OPEN_DECISION");
   });
 
+  it("shows scored bullet checks as areas and keeps private measurement text out", () => {
+    const evaluation = presentEvaluation({
+      id: "eval-3",
+      resumeId: "resume-1",
+      resumeVersionId: "version-1",
+      originalFilename: "Ada_Resume.pdf",
+      mimeType: "application/pdf",
+      scoreStatus: "PROVISIONAL",
+      baseScore: 23,
+      finalScore: null,
+      criteria: [
+        { ruleId: "bullet-length", maxScore: 7, status: "scored", score: 7 },
+        { ruleId: "action-verbs", maxScore: 10, status: "scored", score: 8 },
+        { ruleId: "quantified-metrics", maxScore: 6, status: "scored", score: 0 },
+        { ruleId: "impact-metrics", maxScore: 6, status: "withheld", score: null, reasonCode: "UNRESOLVED_BAND" },
+        { ruleId: "minimum-bullets-per-role", maxScore: 6, status: "withheld", score: null, reasonCode: "OPEN_DECISION" },
+      ],
+      jdMatch: null,
+      createdAt: "2026-11-26T00:00:00.000Z",
+    });
+    const findings = presentFindings(evaluationInputFrom(evaluation), [
+      {
+        id: "verb",
+        ruleId: "action-verbs",
+        message: "Start this bullet with an action verb.",
+        suggestion: null,
+        evidence: [{ blockId: "block-1", startOffset: 0, endOffset: 12 }],
+      },
+    ]);
+    expect(evaluation.areas).toEqual([
+      { label: "Bullet length", state: "passed" },
+      { label: "Action verbs", state: "review" },
+      { label: "Quantified metrics", state: "review" },
+    ]);
+    expect(evaluation.unavailable).toEqual([
+      { label: "Impact metrics", explanation: "This check could not be completed for this result." },
+      { label: "Bullets per role", explanation: "This check could not be completed from the roles on this resume." },
+    ]);
+    expect(evaluation.score).toBe(23);
+    expect(evaluation.notice).toContain("provisional");
+    const serialized = JSON.stringify({ evaluation, findings });
+    for (const token of ["action-verbs-2026-11-26-v1", "12 words", "OPEN_DECISION", "UNRESOLVED_BAND", "65%"]) {
+      expect(serialized).not.toContain(token);
+    }
+    expect(findings).toEqual([
+      {
+        id: "verb",
+        kind: "issue",
+        message: "Start this bullet with an action verb.",
+        suggestion: null,
+        evidence: [{ blockId: "block-1", startOffset: 0, endOffset: 12 }],
+      },
+    ]);
+  });
+
   it("keeps a complete score only when the stored result is final", () => {
     const history = presentHistoryItem({
       id: "eval-2",
@@ -157,6 +212,17 @@ describe("public evaluation presentation", () => {
     expect(history).not.toHaveProperty("rubricVersion");
   });
 });
+
+function evaluationInputFrom(evaluation: { areas: readonly { label: string }[] }) {
+  return {
+    criteria: evaluation.areas.map((area) => ({
+      ruleId: area.label === "Action verbs" ? "action-verbs" : "bullet-length",
+      maxScore: area.label === "Action verbs" ? 10 : 7,
+      status: "scored" as const,
+      score: area.label === "Action verbs" ? 8 : 7,
+    })),
+  };
+}
 
 function evaluationInput() {
   return {

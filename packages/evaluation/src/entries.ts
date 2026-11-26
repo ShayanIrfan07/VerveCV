@@ -126,12 +126,41 @@ function parseSection(
       continue;
     }
     const previous = header[header.length - 1];
-    if (!previous || isProse(block.text) || header.length >= 3 || !canJoinHeader(previous, block)) {
+    if (previous && joinsAsDate(previous, block)) {
+      header.push(block);
+      continue;
+    }
+    const joined = header.some((line) => canJoinHeader(line, block));
+    if (!joined || isProse(block.text) || header.length >= 3) {
       uncertain = true;
     }
     header.push(block);
   }
   close();
+}
+
+function joinsAsDate(previous: ResumeBlock, next: ResumeBlock): boolean {
+  if (!isDateLine(next.text) || isProse(next.text)) {
+    return false;
+  }
+  return canJoinHeader(previous, next) || sameBaseline(previous, next);
+}
+
+function isDateLine(text: string): boolean {
+  const stripped = text
+    .replace(/\b(?:present|current|(?:19|20)\d{2}|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/giu, " ")
+    .replace(/[-–—/,]/gu, " ")
+    .trim();
+  return stripped.length === 0 && text.trim().length > 0;
+}
+
+function sameBaseline(previous: ResumeBlock, next: ResumeBlock): boolean {
+  const above = previous.boxes?.[0];
+  const below = next.boxes?.[0];
+  if (!above || !below || above.page !== below.page) {
+    return false;
+  }
+  return Math.abs(above.y - below.y) <= 3 && below.x >= above.x;
 }
 
 function canJoinHeader(previous: ResumeBlock, next: ResumeBlock): boolean {

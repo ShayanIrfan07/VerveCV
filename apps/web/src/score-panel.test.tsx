@@ -72,7 +72,8 @@ describe("resume analysis panel", () => {
     expect(container.textContent).not.toContain("13/13");
     expect(container.textContent).toContain("What's working well");
     expect(container.textContent).toContain("Required sections");
-    expect(container.textContent).toContain("Strong");
+    expect(container.textContent).toContain("2 of 2 evaluated");
+    expect(container.textContent).toContain("Coverage represents completed checks, not resume quality or earned points.");
     expect(container.textContent).toContain("Contact information");
     expect(container.textContent).toContain("Unique skills");
     expect(container.textContent).not.toContain("4/4");
@@ -140,7 +141,7 @@ describe("resume analysis panel", () => {
 
     expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("11");
     expect(container.textContent).not.toContain("11/13");
-    expect(container.textContent).toContain("Needs improvement");
+    expect(container.textContent).toContain("Evaluated with confirmed improvement opportunities");
     expect(container.textContent).not.toContain("2/4");
     expect(container.textContent).toContain("A phone number was not found.");
     expect(container.textContent).not.toContain("No confirmed issues");
@@ -180,7 +181,7 @@ describe("resume analysis panel", () => {
     expect(container.textContent).not.toContain("rubric-2026-11-12-provisional");
     expect(container.textContent).not.toContain("DETECTOR_VERSION");
     expect(container.textContent).toContain("Your improvement plan is ready.");
-    expect(container.textContent).toContain("Not fully evaluated");
+    expect(container.textContent).toContain("1 of 2 evaluated");
     expect(container.textContent).not.toContain("%");
     cleanup();
   });
@@ -206,7 +207,8 @@ describe("resume analysis panel", () => {
     expect(container.textContent).toContain("What's working well");
     expect(container.textContent).toContain("Contact information");
     expect(container.querySelector("details")?.open).toBe(false);
-    expect(container.textContent).toContain("Not fully evaluated");
+    expect(container.textContent).toContain("1 of 1 evaluated");
+    expect(container.textContent).toContain("Additional checks pending");
     const card = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Recieve"));
     act(() => {
       card?.click();
@@ -270,8 +272,105 @@ describe("resume analysis panel", () => {
     expect(details?.open).toBe(false);
     expect(container.textContent).toContain("Checks not yet available (2)");
     expect(container.textContent).not.toContain("Checks not yet available (15)");
+    expect(container.textContent).not.toContain("4 of 5");
     expect(container.textContent).not.toContain("undecided");
     expect(container.textContent).toContain("This check is not yet available.");
     cleanup();
   });
+
+  it("derives bullet coverage from the response and groups repeated findings once per bullet", () => {
+    const findings: ScoreFinding[] = [
+      finding("q1", "This bullet does not include a measurable quantity.", "bullet-a", 1),
+      finding("q2", "This bullet does not include a measurable quantity.", "bullet-a", 1),
+      finding("q3", "This bullet does not include a measurable quantity.", "bullet-b"),
+      finding("impact", "This bullet does not state a measurable outcome.", "bullet-c", 2),
+    ];
+    const onHighlight = vi.fn();
+    const { container, cleanup } = renderPanel(
+      <ScorePanel
+        activeHighlight={null}
+        evaluation={evaluation({
+          areas: [
+            { label: "Bullet length", state: "passed" },
+            { label: "Action verbs", state: "review" },
+            { label: "Quantified metrics", state: "review" },
+            { label: "Impact metrics", state: "passed" },
+          ],
+          unavailable: [{ label: "Bullets per role", explanation: "This check could not be completed from the roles on this resume." }],
+        })}
+        findings={findings}
+        onHighlight={onHighlight}
+        sourceBlocks={[
+          { id: "bullet-a", text: "Developed REST APIs using Spring Boot.", page: 1 },
+          { id: "bullet-c", text: "Improved the billing workflow." },
+        ]}
+      />,
+    );
+
+    expect(container.textContent).toContain("4 of 5 evaluated");
+    expect(container.textContent).not.toContain("5 of 5 evaluated");
+    const bulletCoverage = container.querySelector('[data-testid="coverage-bullet-points"]');
+    expect(bulletCoverage?.querySelectorAll("span.h-1\\.5").length).toBe(5);
+    const bulletDetails = bulletCoverage?.querySelector("details");
+    expect(bulletDetails?.open).toBe(false);
+    act(() => {
+      bulletDetails?.querySelector("summary")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      if (bulletDetails) {
+        bulletDetails.open = true;
+      }
+    });
+    expect(bulletCoverage?.textContent).toContain("Evaluated");
+    expect(bulletCoverage?.textContent).toContain("Evaluated with confirmed improvement opportunities");
+    expect(bulletCoverage?.textContent).toContain("Unavailable");
+    expect(container.textContent).toContain("Add measurable quantities");
+    expect(container.textContent).toContain("2 bullets need attention");
+    expect(container.textContent).toContain("Developed REST APIs using Spring Boot.");
+    expect(container.textContent).toContain("Original bullet · Page 1");
+    expect(container.textContent).toContain("[quantity, percentage, duration, or scale]");
+    expect(container.textContent).toContain("Replace placeholders with verified information.");
+    expect(container.textContent).not.toContain("rewritten achievement");
+    const missing = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("bullet-b") || button.textContent?.includes("Original text is not available"));
+    expect(container.textContent).toContain("Original text is not available for this result.");
+    expect(missing).toBeTruthy();
+    const located = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Improved the billing workflow."));
+    act(() => {
+      located?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onHighlight).toHaveBeenCalledWith(expect.objectContaining({ blockId: "bullet-c", page: 2, tone: "issue" }));
+    expect(container.textContent).not.toContain("OPEN_DECISION");
+    expect(container.textContent).not.toContain("65%");
+    cleanup();
+  });
+
+  it("shows five of five when every bullet check in the response was evaluated", () => {
+    const { container, cleanup } = renderPanel(
+      <ScorePanel
+        activeHighlight={null}
+        evaluation={evaluation({
+          areas: [
+            { label: "Bullet length", state: "review" },
+            { label: "Action verbs", state: "passed" },
+            { label: "Quantified metrics", state: "passed" },
+            { label: "Impact metrics", state: "passed" },
+            { label: "Bullets per role", state: "passed" },
+          ],
+          unavailable: [],
+        })}
+        findings={[]}
+        onHighlight={() => undefined}
+      />,
+    );
+    expect(container.textContent).toContain("5 of 5 evaluated");
+    expect(container.textContent).not.toContain("Unavailable");
+    cleanup();
+  });
 });
+
+function finding(id: string, message: string, blockId: string, page?: number): ScoreFinding {
+  return {
+    id,
+    kind: "issue",
+    message,
+    evidence: [{ blockId, startOffset: 0, endOffset: 8, ...(page === undefined ? {} : { page }) }],
+  };
+}

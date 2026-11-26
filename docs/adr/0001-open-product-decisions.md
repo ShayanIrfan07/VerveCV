@@ -1,6 +1,6 @@
 # ADR 0001: Open product decisions
 
-Status: Open. None of the items below is decided by this record.
+Status: Open, except items 3, A2, A3, A4, A5, and A13, which [ADR 0002](0002-bullet-quality-measurement.md) accepts.
 Date: 2026-11-12
 Related: [RUBRIC](../architecture/RUBRIC.md), [HLD](../architecture/HLD.md), [SECURITY](../architecture/SECURITY.md)
 
@@ -30,6 +30,8 @@ Do not pick 5 or 3. A result whose count is exactly two marks this criterion unr
 Question: which score applies at exactly two, and which row boundaries are inclusive?
 
 ### 3. Eligible bullet
+
+Closed by [ADR 0002](0002-bullet-quality-measurement.md). Eligible means a recognized bullet in the three experience sections, at any length.
 
 Bullet-quality scoring unlocks at five bullets drawn from Work Experience, Leadership Experience, and Projects. The length rule separately talks about bullets of at least 12 words. The source does not say whether a bullet under 12 words is excluded from the percentage denominator.
 
@@ -147,6 +149,8 @@ Proposal for approval, not implemented: round half up to the nearest whole perce
 
 ### A2. Word-count tokenization
 
+Closed by [ADR 0002](0002-bullet-quality-measurement.md). The existing tokenizer is the length measurement.
+
 The length rule needs a 12-word threshold and “robust” counting for punctuation, hyphenated terms, and technical tokens. The source does not define a token.
 
 Examples that need a ruling: `end-to-end`, `Node.js`, `CI/CD`, `C#`, `10%`, a phone number, a date.
@@ -155,11 +159,15 @@ Question: what is the authoritative word-count algorithm?
 
 ### A3. Action-verb lexicon
 
+Closed by [ADR 0002](0002-bullet-quality-measurement.md). Lexicon `action-verbs-2026-11-26-v1`.
+
 The bands are specified. Credit applies only when the bullet begins with an action verb or an approved equivalent construction, including inflections. No verb list is supplied. A verb later in the sentence does not count.
 
 Question: which dictionary version, which inflections, and which leading constructions are approved?
 
 ### A4. Quantified-metric recognizer
+
+Closed by [ADR 0002](0002-bullet-quality-measurement.md). Recognizer `quantities-2026-11-26-v1`. The 65 percent row still suppresses missing-quantity findings. Impact findings stay separate.
 
 The bands and the 65% feedback-suppression rule for missing metrics are specified. Dates, phone numbers, software versions, and unrelated numbers do not count. A full recognizer is not specified.
 
@@ -168,6 +176,8 @@ The source also says impact feedback disappears once 65% of bullets are quantifi
 Question: which number patterns count as metrics, and does the 65% threshold hide impact feedback or only missing-metric feedback?
 
 ### A5. Impact classifier and the confetti condition
+
+The classifier is closed by [ADR 0002](0002-bullet-quality-measurement.md). Confetti remains out of scope.
 
 Impact examples are outcome metrics such as cost, revenue, time, latency, growth, efficiency, and conversion. Scale examples such as “Managed 50 client accounts.” are not impact. The source asks for conservative patterns. An uncertain bullet should produce a suggestion and no invented deduction.
 
@@ -249,6 +259,8 @@ Question: confirm the formula reading, and what score applies when there are zer
 
 ### A13. Company identity and “most recent”
 
+Closed by [ADR 0002](0002-bullet-quality-measurement.md). Identity is the normalized employer line. Legal-suffix aliases are not used. A tie at a requirement boundary withholds the check.
+
 Unique-company categories depend on company identity and on which role is latest. The source does not define legal-suffix aliases (`Google` and `Google LLC`) or ties and missing dates.
 
 Question: how are company names matched, and which role is latest when dates are missing or equal?
@@ -281,7 +293,7 @@ These are recorded so later phases do not treat them as silent inventions. They 
 
 | Topic | Working reading | Item |
 |---|---|---|
-| Eligible bullet | Any recognized bullet in the three sections, any length | 3 |
+| Eligible bullet | Accepted in ADR 0002: any recognized bullet in the three sections, any length | 3 |
 | Keyword formula | Average completion × 7, round half up; the “Points” column is not a second score | A12 |
 | Impact below 10% quantified | Score 0; ignore the stray C4 label | A16 |
 | Unresolved criterion | Return withheld, disclose it, do not rescale the subtotal | 1 |

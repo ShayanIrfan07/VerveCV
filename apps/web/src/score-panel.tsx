@@ -26,6 +26,12 @@ export interface ScoreFinding {
   evidence: EvidenceLocator[];
 }
 
+export interface FindingSource {
+  id: string;
+  text: string;
+  page?: number;
+}
+
 export interface ScoreView {
   id: string;
   resumeId: string;
@@ -63,12 +69,14 @@ export function ScorePanel({
   findings,
   activeHighlight,
   previewUnavailableReason,
+  sourceBlocks,
   onHighlight,
 }: {
   evaluation: ScoreView;
   findings: ScoreFinding[];
   activeHighlight: EvidenceLocator | null;
   previewUnavailableReason?: string | null;
+  sourceBlocks?: readonly FindingSource[];
   onHighlight: (locator: EvidenceLocator | null) => void;
   onPreview?: () => void;
 }) {
@@ -81,6 +89,7 @@ export function ScorePanel({
         findings={findings}
         onHighlight={onHighlight}
         previewUnavailableReason={previewUnavailableReason}
+        sourceBlocks={sourceBlocks}
       />
     </div>
   );
@@ -130,12 +139,14 @@ export function EvaluationInsights({
   findings,
   activeHighlight,
   previewUnavailableReason,
+  sourceBlocks,
   onHighlight,
 }: {
   evaluation: ScoreView;
   findings: ScoreFinding[];
   activeHighlight: EvidenceLocator | null;
   previewUnavailableReason?: string | null;
+  sourceBlocks?: readonly FindingSource[];
   onHighlight: (locator: EvidenceLocator | null) => void;
 }) {
   const passed = evaluation.areas.filter((area) => area.state === "passed");
@@ -158,22 +169,14 @@ export function EvaluationInsights({
         <h3 className="text-base font-semibold text-[#17172B]">Resume health</h3>
         <ul className="mt-4 grid gap-4">
           {HEALTH_CATEGORIES.map((category) => {
-            const matched = evaluation.areas.filter((area) => category.labels.includes(area.label));
-            const pending = evaluation.unavailable.filter((check) => category.labels.includes(check.label));
-            const status = healthStatus(matched, pending);
-            const muted = status === "Not fully evaluated" || status === "No public result";
-            return (
-              <li key={category.title}>
-                <p className="text-sm font-medium text-[#334155]">{category.title}</p>
-                {muted ? (
-                  <p className="mt-2 rounded-lg bg-[#F1F5F9] px-2.5 py-2 text-xs leading-5 text-[#64748B]">{status}</p>
-                ) : (
-                  <p className={`mt-1.5 text-xs leading-5 ${status === "Strong" ? "text-[#059669]" : "text-[#D97706]"}`}>{status}</p>
-                )}
-              </li>
-            );
+            const checks = checksForCategory(category, evaluation);
+            if (checks.length === 0) {
+              return null;
+            }
+            return <CategoryCoverage checks={checks} key={category.title} title={category.title} />;
           })}
         </ul>
+        <p className="mt-4 text-xs leading-5 text-[#64748B]">Coverage represents completed checks, not resume quality or earned points.</p>
         {evaluation.unavailable.length > 0 ? (
           <details className="mt-4 border-t border-[#E2E8F0] pt-3">
             <summary className="cursor-pointer text-xs font-medium text-[#334155]">
@@ -200,7 +203,14 @@ export function EvaluationInsights({
               : "No confirmed issues in the scored checks."}
           </p>
         ) : null}
-        {issues.length > 0 ? <FindingCards activeHighlight={activeHighlight} findings={issues} onHighlight={onHighlight} openFindingId={openFindingId} setOpenFindingId={setOpenFindingId} /> : null}
+        {issues.length > 0 ? (
+          <IssueGroups
+            activeHighlight={activeHighlight}
+            findings={issues}
+            onHighlight={onHighlight}
+            sourceBlocks={sourceBlocks}
+          />
+        ) : null}
       </section>
 
       {notes.length > 0 ? (
@@ -231,6 +241,108 @@ export function EvaluationInsights({
   );
 }
 
+type CoverageCheck = {
+  label: string;
+  status: "evaluated" | "attention" | "unavailable";
+};
+
+function checksForCategory(category: { title: string; labels: string[] }, evaluation: ScoreView): CoverageCheck[] {
+  const checks: CoverageCheck[] = [];
+  for (const label of category.labels) {
+    const area = evaluation.areas.find((item) => item.label === label);
+    const pending = evaluation.unavailable.find((item) => item.label === label);
+    if (area) {
+      checks.push({ label, status: area.state === "passed" ? "evaluated" : "attention" });
+    } else if (pending) {
+      checks.push({ label, status: "unavailable" });
+    }
+  }
+  return checks;
+}
+
+function CategoryCoverage({ title, checks }: { title: string; checks: readonly CoverageCheck[] }) {
+  const evaluated = checks.filter((check) => check.status !== "unavailable").length;
+  const pending = evaluated === 0;
+  return (
+    <li data-testid={`coverage-${title.toLowerCase().replace(/[^a-z]+/gu, "-")}`}>
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-sm font-medium text-[#334155]">{title}</p>
+        <p className={`text-xs font-semibold ${pending ? "text-[#64748B]" : "text-[#7C3AED]"}`}>
+          {pending ? "Incomplete" : `${evaluated} of ${checks.length} evaluated`}
+        </p>
+      </div>
+      {pending ? (
+        <p className="mt-2 rounded-lg bg-[#F1F5F9] px-2.5 py-2 text-xs leading-5 text-[#64748B]">Additional checks pending</p>
+      ) : (
+        <>
+          <div aria-hidden="true" className="mt-2 flex gap-1">
+            {checks.map((check) => (
+              <span
+                className={`h-1.5 flex-1 rounded-full ${check.status === "unavailable" ? "bg-[#E2E8F0]" : "bg-[#7C3AED]"}`}
+                key={check.label}
+              />
+            ))}
+          </div>
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs font-medium text-[#334155]">View individual checks</summary>
+            <ul className="mt-2 grid gap-2 rounded-lg bg-[#F8F7FF] p-3">
+              {checks.map((check) => (
+                <li className="flex items-start justify-between gap-3 text-sm" key={check.label}>
+                  <span className="flex items-start gap-2 text-[#334155]">
+                    <CoverageIcon status={check.status} />
+                    <span>{check.label}</span>
+                  </span>
+                  <span className={`shrink-0 text-right text-xs font-semibold ${coverageTone(check.status)}`}>
+                    {check.status === "attention" ? "Needs attention" : coverageLabel(check.status)}
+                    {check.status === "attention" ? <span className="sr-only">Evaluated with confirmed improvement opportunities</span> : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        </>
+      )}
+    </li>
+  );
+}
+
+function coverageLabel(status: CoverageCheck["status"]): string {
+  if (status === "evaluated") {
+    return "Evaluated";
+  }
+  if (status === "attention") {
+    return "Evaluated with confirmed improvement opportunities";
+  }
+  return "Unavailable";
+}
+
+function coverageTone(status: CoverageCheck["status"]): string {
+  if (status === "evaluated") {
+    return "text-[#059669]";
+  }
+  if (status === "attention") {
+    return "text-[#B45309]";
+  }
+  return "text-[#64748B]";
+}
+
+function CoverageIcon({ status }: { status: CoverageCheck["status"] }) {
+  if (status === "unavailable") {
+    return (
+      <svg aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-[#94A3B8]" fill="none" viewBox="0 0 16 16">
+        <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.4" />
+      </svg>
+    );
+  }
+  const attention = status === "attention";
+  return (
+    <svg aria-hidden="true" className={`mt-0.5 h-4 w-4 shrink-0 ${attention ? "text-[#D97706]" : "text-[#059669]"}`} fill="none" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.4" />
+      {attention ? <path d="M8 4.5v4" stroke="currentColor" strokeWidth="1.4" /> : <path d="M5 8.2 7 10.2 11 6" stroke="currentColor" strokeWidth="1.4" />}
+    </svg>
+  );
+}
+
 const HEALTH_CATEGORIES: Array<{ title: string; labels: string[] }> = [
   {
     title: "Bullet points",
@@ -249,6 +361,180 @@ const HEALTH_CATEGORIES: Array<{ title: string; labels: string[] }> = [
     labels: ["Contact information", "Unique skills", "Skills ratio", "Industry keywords", "Education details", "Job description comparison", "Additional check"],
   },
 ];
+
+const ISSUE_GUIDES: Record<string, { title: string; explanation: string; placeholder: string }> = {
+  "This bullet is shorter than the length check allows.": {
+    title: "Improve bullet length",
+    explanation: "State the action, the scope, and the result in the same bullet.",
+    placeholder: "[specific scope or result]",
+  },
+  "Start this bullet with an action verb.": {
+    title: "Use stronger action verbs",
+    explanation: "Start the bullet with the action, then the work it describes.",
+    placeholder: "[Action verb]",
+  },
+  "This bullet does not include a measurable quantity.": {
+    title: "Add measurable quantities",
+    explanation: "Include relevant quantities, percentages, durations or scale where accurate.",
+    placeholder: "[quantity, percentage, duration, or scale]",
+  },
+  "This bullet does not state a measurable outcome.": {
+    title: "Demonstrate measurable impact",
+    explanation: "Describe a verified improvement in cost, time, quality, performance, or another outcome you can confirm.",
+    placeholder: "[verified improvement in time, cost, quality, or performance]",
+  },
+  "This role has fewer bullets than the check allows.": {
+    title: "Improve employment bullet distribution",
+    explanation: "Add bullets that describe the work done in this role.",
+    placeholder: "[responsibility or result for this role]",
+  },
+};
+
+function IssueGroups({
+  findings,
+  sourceBlocks,
+  activeHighlight,
+  onHighlight,
+}: {
+  findings: readonly ScoreFinding[];
+  sourceBlocks?: readonly FindingSource[];
+  activeHighlight: EvidenceLocator | null;
+  onHighlight: (locator: EvidenceLocator | null) => void;
+}) {
+  const groups = groupIssues(findings, sourceBlocks);
+  return (
+    <ul className="mt-3 grid gap-3">
+      {groups.map((group, index) => (
+        <li className="rounded-[10px] border border-[#FDE68A] bg-[#FFFBEB]" key={group.title}>
+          <details open={index === 0}>
+            <summary className="cursor-pointer list-none p-3.5 [&::-webkit-details-marker]:hidden">
+              <span className="flex items-start justify-between gap-3">
+                <span>
+                  <span className="block text-sm font-semibold text-[#B45309]">{group.title}</span>
+                  <span className="mt-1 block text-xs text-[#B45309]">{attentionCount(group.items.length, group.noun)}</span>
+                </span>
+                <span aria-hidden="true" className="text-[#B45309]">⌄</span>
+              </span>
+            </summary>
+            <div className="grid gap-3 border-t border-[#FDE68A] px-3.5 py-3">
+              <p className="text-[13px] leading-5 text-[#B45309]">{group.explanation}</p>
+              <ul className="grid gap-2">
+                {group.items.map((item) => {
+                  const selected = sameLocator(activeHighlight, item.locator);
+                  return (
+                    <li key={item.key}>
+                      <button
+                        className={`w-full rounded-lg bg-white p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-bright ${selected ? "ring-2 ring-[#F59E0B]" : ""}`}
+                        onClick={() => onHighlight(item.locator)}
+                        onFocus={() => onHighlight(item.locator)}
+                        onMouseEnter={() => onHighlight(item.locator)}
+                        onMouseLeave={() => onHighlight(null)}
+                        type="button"
+                      >
+                        <span className="block text-xs text-[#64748B]">
+                          Original bullet{typeof item.page === "number" ? ` · Page ${item.page}` : ""}
+                        </span>
+                        <span className="mt-1 block text-sm leading-5 text-[#17172B]">
+                          {item.text ?? "Original text is not available for this result."}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {group.structure ? (
+                <div>
+                  <p className="text-xs font-semibold tracking-wide text-[#059669]">SUGGESTED STRUCTURE</p>
+                  <p className="mt-1 text-sm leading-5 text-[#334155]">{group.structure}</p>
+                  <p className="mt-1 text-xs leading-5 text-[#64748B]">Replace placeholders with verified information.</p>
+                </div>
+              ) : null}
+            </div>
+          </details>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+interface IssueItem {
+  key: string;
+  text: string | null;
+  page?: number;
+  locator: EvidenceLocator | null;
+}
+
+interface IssueGroup {
+  title: string;
+  explanation: string;
+  noun: string;
+  structure: string | null;
+  items: IssueItem[];
+}
+
+export function groupIssues(findings: readonly ScoreFinding[], sourceBlocks?: readonly FindingSource[]): IssueGroup[] {
+  const groups: IssueGroup[] = [];
+  for (const finding of findings) {
+    const guide = ISSUE_GUIDES[finding.message];
+    const title = guide?.title ?? finding.message;
+    let group = groups.find((item) => item.title === title);
+    if (!group) {
+      group = {
+        title,
+        explanation: guide?.explanation ?? finding.message,
+        noun: guide ? "bullet" : "item",
+        structure: null,
+        items: [],
+      };
+      groups.push(group);
+    }
+    const source = sourceFor(finding, sourceBlocks);
+    const blockId = source.locator?.blockId;
+    if (blockId && group.items.some((item) => item.locator?.blockId === blockId)) {
+      continue;
+    }
+    group.items.push({
+      key: finding.id ?? `${title}-${group.items.length}`,
+      text: source.text,
+      ...(source.page === undefined ? {} : { page: source.page }),
+      locator: source.locator ? { ...source.locator, tone: "issue" } : null,
+    });
+    if (guide && group.structure === null) {
+      const base = source.text?.replace(/[.]+$/u, "").trim();
+      if (!base) {
+        group.structure = `${guide.placeholder}.`;
+      } else if (guide.placeholder.startsWith("[Action verb]")) {
+        group.structure = `${guide.placeholder} ${base}.`;
+      } else {
+        group.structure = `${base} ${guide.placeholder}.`;
+      }
+    }
+  }
+  return groups;
+}
+
+function sourceFor(
+  finding: ScoreFinding,
+  sourceBlocks: readonly FindingSource[] | undefined,
+): { text: string | null; page?: number; locator: EvidenceLocator | null } {
+  const locator = primaryLocator(finding.evidence);
+  const block = locator ? sourceBlocks?.find((item) => item.id === locator.blockId) : undefined;
+  const page = typeof locator?.page === "number" ? locator.page : block?.page;
+  if (!block) {
+    return { text: null, ...(page === undefined ? {} : { page }), locator };
+  }
+  const text = block.text.trim();
+  return { text: text.length > 0 ? text : null, ...(page === undefined ? {} : { page }), locator };
+}
+
+function attentionCount(count: number, noun: string): string {
+  const label = count === 1 ? noun : `${noun}s`;
+  return `${count} ${label} ${count === 1 ? "needs" : "need"} attention`;
+}
+
+function sameLocator(active: EvidenceLocator | null, locator: EvidenceLocator | null): boolean {
+  return active !== null && locator !== null && active.blockId === locator.blockId && active.startOffset === locator.startOffset && active.endOffset === locator.endOffset;
+}
 
 function FindingCards({
   findings,
@@ -327,19 +613,6 @@ export function friendlyUnavailableExplanation(explanation: string): string {
     return "This check is not yet available.";
   }
   return explanation;
-}
-
-function healthStatus(areas: readonly AnalysisArea[], unavailable: readonly UnavailableCheck[]): string {
-  if (areas.length === 0) {
-    return unavailable.length > 0 ? "Not fully evaluated" : "No public result";
-  }
-  if (areas.some((area) => area.state === "review") && unavailable.length === 0) {
-    return "Needs improvement";
-  }
-  if (unavailable.length > 0) {
-    return "Not fully evaluated";
-  }
-  return "Strong";
 }
 
 function FindingIcon({ issue }: { issue: boolean }) {
