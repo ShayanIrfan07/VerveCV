@@ -45,6 +45,8 @@ export function DeleteResumeDialog({
       const first = items[0];
       const last = items[items.length - 1];
       if (!first || !last) {
+        event.preventDefault();
+        panel?.focus();
         return;
       }
       const active = document.activeElement;
@@ -59,8 +61,18 @@ export function DeleteResumeDialog({
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
-      previous?.focus();
+      if (previous?.isConnected) {
+        previous.focus();
+      } else {
+        document.getElementById("deletion-notice")?.focus();
+      }
     };
+  }, []);
+
+  useEffect(() => {
+    if (pending) {
+      panelRef.current?.focus();
+    }
   }, [pending]);
 
   return (
@@ -79,6 +91,7 @@ export function DeleteResumeDialog({
         className="w-full max-w-[440px] rounded-2xl border border-[#E2E8F0] bg-white p-6"
         ref={panelRef}
         role="dialog"
+        tabIndex={-1}
       >
         <div className="grid h-10 w-10 place-items-center rounded-full bg-[#FEE2E2] text-[#DC2626]">
           <svg aria-hidden="true" className="h-5 w-5" fill="none" viewBox="0 0 20 20">

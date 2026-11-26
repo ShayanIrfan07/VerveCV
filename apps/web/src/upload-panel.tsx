@@ -89,6 +89,7 @@ export function UploadPanel({
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletionNotice, setDeletionNotice] = useState<string | null>(null);
+  const [historyWarning, setHistoryWarning] = useState<string | null>(null);
   const deleteLock = useRef(false);
 
   useEffect(() => {
@@ -97,6 +98,10 @@ export function UploadPanel({
 
   // Monotonic operation token prevents late async completions from overwriting newer file selections or history views.
   const operationSeqRef = useRef(0);
+  const historyRef = useRef<HistoryItem[]>([]);
+  historyRef.current = history;
+  const removedResumeIds = useRef(new Set<string>());
+  const removedVersionIds = useRef(new Set<string>());
   const sessionExpiredRef = useRef(onSessionExpired);
   sessionExpiredRef.current = onSessionExpired;
   // Session-local cache of verified version previews so reopening a historical score restores the exact version without network round-trips when already loaded.
@@ -130,6 +135,38 @@ export function UploadPanel({
     setDeleteError(null);
   }
 
+  function forgetResume(resumeId: string) {
+    removedResumeIds.current.add(resumeId);
+    for (const item of historyRef.current) {
+      if (item.resumeId === resumeId) {
+        removedVersionIds.current.add(item.resumeVersionId);
+        versionPreviewCacheRef.current.delete(item.resumeVersionId);
+      }
+    }
+    if (evaluation?.resumeId === resumeId && evaluation.resumeVersionId) {
+      removedVersionIds.current.add(evaluation.resumeVersionId);
+      versionPreviewCacheRef.current.delete(evaluation.resumeVersionId);
+    }
+    setHistory((current) => current.filter((item) => item.resumeId !== resumeId));
+    const viewingDeleted =
+      evaluation?.resumeId === resumeId ||
+      (versionId !== null && removedVersionIds.current.has(versionId)) ||
+      (previewSession?.versionId !== undefined && previewSession.versionId !== null && removedVersionIds.current.has(previewSession.versionId));
+    if (viewingDeleted) {
+      resetActiveResumeState();
+    }
+  }
+
+  function stillPresent(resumeId: string | undefined, version: string | null | undefined): boolean {
+    if (resumeId !== undefined && removedResumeIds.current.has(resumeId)) {
+      return false;
+    }
+    if (version !== undefined && version !== null && removedVersionIds.current.has(version)) {
+      return false;
+    }
+    return true;
+  }
+
   async function confirmDelete() {
     if (!pendingDelete || deleteLock.current) {
       return;
@@ -143,21 +180,25 @@ export function UploadPanel({
         method: "DELETE",
       });
       if (result.status === 204) {
-        versionPreviewCacheRef.current.delete(target.resumeVersionId);
-        const viewingDeleted =
-          evaluation?.resumeId === target.resumeId || versionId === target.resumeVersionId || previewSession?.versionId === target.resumeVersionId;
-        if (viewingDeleted) {
-          resetActiveResumeState();
-        }
+        forgetResume(target.resumeId);
         setPendingDelete(null);
         const label = target.originalFilename ?? "This resume";
         setDeletionNotice(`Deletion requested. ${label} is no longer available.`);
-        await loadHistory(0, false);
+        const refreshed = await loadHistory(0, false).catch(() => false);
+        if (!refreshed) {
+          setHistoryWarning("The resume was deleted, but the list could not be refreshed.");
+        } else {
+          setHistoryWarning(null);
+        }
         return;
       }
       if (result.status === 404) {
-        await loadHistory(0, false);
+        forgetResume(target.resumeId);
         setDeleteError("This resume is no longer available.");
+        const refreshed = await loadHistory(0, false).catch(() => false);
+        if (!refreshed) {
+          setHistoryWarning("The list could not be refreshed.");
+        }
         return;
       }
       if (result.status === 429) {
@@ -363,10 +404,12 @@ export function UploadPanel({
       sessionExpiredRef.current?.();
     }
     if (listed.status === 200 && listed.body) {
-      const nextItems = listed.body.evaluations;
+      const nextItems = listed.body.evaluations.filter((item) => !removedResumeIds.current.has(item.resumeId));
       setHistory((prev) => (append ? [...prev, ...nextItems] : nextItems));
       setHistoryPagination(listed.body.pagination ?? null);
+      return true;
     }
+    return false;
   }, []);
 
   useEffect(() => {
@@ -410,11 +453,14 @@ export function UploadPanel({
       }),
     });
 
-    if (operationSeqRef.current !== seq) {
+    if (operationSeqRef.current !== seq || !stillPresent(undefined, targetVersionId)) {
       return;
     }
     if (result.status !== 200 || !result.body?.evaluation) {
       setStatus(result.body?.error?.message ?? "The server did not score the resume.");
+      return;
+    }
+    if (!stillPresent(result.body.evaluation.resumeId, result.body.evaluation.resumeVersionId)) {
       return;
     }
 
@@ -437,7 +483,7 @@ export function UploadPanel({
       error?: { message: string };
     }>(`/api/v1/evaluations/${item.id}`);
 
-    if (operationSeqRef.current !== seq) {
+    if (operationSeqRef.current !== seq || !stillPresent(item.resumeId, item.resumeVersionId)) {
       return;
     }
     if (result.status !== 200 || !result.body?.evaluation) {
@@ -531,7 +577,7 @@ export function UploadPanel({
         (filename.toLowerCase().endsWith(".docx") ? DOCX_MIME : PDF_MIME);
 
       const extracted = await extractDocument(filename, mimeType, fetchedBytes);
-      if (operationSeqRef.current !== seq) {
+      if (operationSeqRef.current !== seq || !stillPresent(loadedEval.resumeId, targetVersionId)) {
         return;
       }
 
@@ -575,8 +621,16 @@ export function UploadPanel({
   return (
     <section className="grid min-w-0 gap-5">
       {deletionNotice ? (
-        <p className="rounded-xl border border-[#E2E8F0] bg-white px-4 py-3 text-sm text-[#334155]" role="status">
+        <p className="rounded-xl border border-[#E2E8F0] bg-white px-4 py-3 text-sm text-[#334155]" id="deletion-notice" role="status" tabIndex={-1}>
           {deletionNotice}
+        </p>
+      ) : null}
+      {historyWarning ? (
+        <p className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3 text-sm text-[#92400E]" role="alert">
+          {historyWarning}
+          <button className="ml-3 font-semibold underline" onClick={() => void loadHistory(0, false).then((ok) => setHistoryWarning(ok ? null : historyWarning))} type="button">
+            Retry list
+          </button>
         </p>
       ) : null}
       {evaluation && user ? (
