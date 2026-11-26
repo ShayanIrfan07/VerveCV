@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiRequest, type SessionUser } from "./api";
 import { AuthPanel } from "./auth-panel";
 import { AppShell, PageHeader, type WorkspaceSection } from "./shell";
@@ -182,4 +182,3 @@ function Settings({ user }: { user: SessionUser }) {
     </section>
   );
 }
-
