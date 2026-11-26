@@ -96,7 +96,8 @@ describe("resume analysis panel", () => {
       }
     });
     expect(container.textContent).toContain("Readability");
-    expect(container.textContent).toContain("no scoring method has been approved");
+    expect(container.textContent).toContain("This check is not yet available.");
+    expect(container.textContent).not.toContain("no scoring method has been approved");
     expect(container.textContent).not.toContain("OPEN_DECISION");
 
     const layout = container.querySelector(".flex-col");
@@ -143,7 +144,10 @@ describe("resume analysis panel", () => {
     expect(container.textContent).not.toContain("2/4");
     expect(container.textContent).toContain("A phone number was not found.");
     expect(container.textContent).not.toContain("No confirmed issues");
-    expect(container.textContent).toContain('Possible misspelling "Recieve".');
+    expect(container.querySelector('[data-testid="scored-findings"]')?.textContent).toContain("A phone number was not found.");
+    expect(container.querySelector('[data-testid="scored-findings"]')?.textContent).not.toContain("Recieve");
+    expect(container.querySelector('[data-testid="writing-suggestions"]')?.textContent).toContain("These notes are not part of the score.");
+    expect(container.querySelector('[data-testid="writing-suggestions"]')?.textContent).toContain('Possible misspelling "Recieve".');
 
     const suggestion = Array.from(container.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Recieve"),
@@ -217,7 +221,7 @@ describe("resume analysis panel", () => {
       }
     });
     expect(container.textContent).toContain("Readability");
-    expect(container.textContent).toContain("not available");
+    expect(container.textContent).toContain("not yet available");
     expect(container.textContent).not.toContain("Failed");
     expect(container.textContent).not.toContain("/100");
     cleanup();
@@ -243,7 +247,31 @@ describe("resume analysis panel", () => {
     expect(container.textContent).not.toContain("Provisional");
     expect(container.textContent).not.toContain("/100");
     expect(container.textContent).not.toContain("%");
-    expect(container.textContent).toContain("No confirmed issues in the scored checks. Other checks are not yet available.");
+    expect(container.textContent).toContain("No confirmed issues in the scored checks.");
+    expect(container.textContent).not.toContain("Other checks are not yet available.");
+    cleanup();
+  });
+
+  it("uses the unavailable count from the evaluation and keeps that list collapsed", () => {
+    const { container, cleanup } = renderPanel(
+      <ScorePanel
+        activeHighlight={null}
+        evaluation={evaluation({
+          unavailable: [
+            { label: "Readability", explanation: "The recognizer is still undecided." },
+            { label: "Section order", explanation: "This check is not yet available." },
+          ],
+        })}
+        findings={[]}
+        onHighlight={() => undefined}
+      />,
+    );
+    const details = container.querySelector("details");
+    expect(details?.open).toBe(false);
+    expect(container.textContent).toContain("Checks not yet available (2)");
+    expect(container.textContent).not.toContain("Checks not yet available (15)");
+    expect(container.textContent).not.toContain("undecided");
+    expect(container.textContent).toContain("This check is not yet available.");
     cleanup();
   });
 });

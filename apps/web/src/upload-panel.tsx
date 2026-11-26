@@ -1,6 +1,7 @@
 import { sampleDocxBytes, samplePdfBytes, type ResumeDocument } from "@vervecv/documents";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest, type SessionUser } from "./api";
+import { DeleteResumeDialog } from "./delete-resume-dialog";
 import { PreviewView } from "./preview-view";
 import { Brand } from "./shell";
 import { card, field, primaryButton, secondaryButton } from "./ui";
@@ -84,6 +85,12 @@ export function UploadPanel({
   const [selectedFile, setSelectedFile] = useState<{ name: string; bytes: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [mobilePane, setMobilePane] = useState<"resume" | "feedback">("feedback");
+  const [pendingDelete, setPendingDelete] = useState<HistoryItem | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deletionNotice, setDeletionNotice] = useState<string | null>(null);
+  const [historyWarning, setHistoryWarning] = useState<string | null>(null);
+  const deleteLock = useRef(false);
 
   useEffect(() => {
     onEvaluationActive?.(evaluation !== null && user !== null);
@@ -91,6 +98,11 @@ export function UploadPanel({
 
   // Monotonic operation token prevents late async completions from overwriting newer file selections or history views.
   const operationSeqRef = useRef(0);
+  const historyRef = useRef<HistoryItem[]>([]);
+  historyRef.current = history;
+  const removedResumeIds = useRef(new Set<string>());
+  const removedVersionIds = useRef(new Set<string>());
+  const historyRefreshLock = useRef(false);
   const sessionExpiredRef = useRef(onSessionExpired);
   sessionExpiredRef.current = onSessionExpired;
   // Session-local cache of verified version previews so reopening a historical score restores the exact version without network round-trips when already loaded.
@@ -106,6 +118,127 @@ export function UploadPanel({
     setPreviewUnavailableReason(null);
     setPreviewSession(null);
     setSelectedFile(null);
+  }
+
+  function requestDelete(item: HistoryItem) {
+    if (deleteLock.current) {
+      return;
+    }
+    setDeleteError(null);
+    setPendingDelete(item);
+  }
+
+  function closeDeleteDialog() {
+    if (deleteLock.current) {
+      return;
+    }
+    setPendingDelete(null);
+    setDeleteError(null);
+  }
+
+  function forgetResume(resumeId: string) {
+    removedResumeIds.current.add(resumeId);
+    for (const item of historyRef.current) {
+      if (item.resumeId === resumeId) {
+        removedVersionIds.current.add(item.resumeVersionId);
+        versionPreviewCacheRef.current.delete(item.resumeVersionId);
+      }
+    }
+    if (evaluation?.resumeId === resumeId && evaluation.resumeVersionId) {
+      removedVersionIds.current.add(evaluation.resumeVersionId);
+      versionPreviewCacheRef.current.delete(evaluation.resumeVersionId);
+    }
+    setHistory((current) => current.filter((item) => item.resumeId !== resumeId));
+    const viewingDeleted =
+      evaluation?.resumeId === resumeId ||
+      (versionId !== null && removedVersionIds.current.has(versionId)) ||
+      (previewSession?.versionId !== undefined && previewSession.versionId !== null && removedVersionIds.current.has(previewSession.versionId));
+    if (viewingDeleted) {
+      resetActiveResumeState();
+    }
+  }
+
+  function stillPresent(resumeId: string | undefined, version: string | null | undefined): boolean {
+    if (resumeId !== undefined && removedResumeIds.current.has(resumeId)) {
+      return false;
+    }
+    if (version !== undefined && version !== null && removedVersionIds.current.has(version)) {
+      return false;
+    }
+    return true;
+  }
+
+  async function confirmDelete() {
+    if (!pendingDelete || deleteLock.current) {
+      return;
+    }
+    const target = pendingDelete;
+    deleteLock.current = true;
+    setDeletePending(true);
+    setDeleteError(null);
+    try {
+      const result = await authed<{ error?: { message?: string } }>(`/api/v1/resumes/${target.resumeId}`, {
+        method: "DELETE",
+      });
+      if (result.status === 204) {
+        forgetResume(target.resumeId);
+        setPendingDelete(null);
+        const label = target.originalFilename ?? "This resume";
+        setDeletionNotice(`Deletion requested. ${label} is no longer available.`);
+        const refreshed = await loadHistory(0, false).catch(() => false);
+        if (!refreshed) {
+          setHistoryWarning("The resume was deleted, but the list could not be refreshed.");
+        } else {
+          setHistoryWarning(null);
+        }
+        return;
+      }
+      if (result.status === 404) {
+        forgetResume(target.resumeId);
+        setPendingDelete(null);
+        setDeleteError(null);
+        setDeletionNotice("This resume is no longer available.");
+        const refreshed = await loadHistory(0, false).catch(() => false);
+        if (!refreshed) {
+          setHistoryWarning("The list could not be refreshed.");
+        } else {
+          setHistoryWarning(null);
+        }
+        return;
+      }
+      if (result.status === 429) {
+        const wait = result.retryAfterSeconds;
+        setDeleteError(
+          wait === null ? "Too many requests. Try again shortly." : `Too many requests. Try again in ${wait} seconds.`,
+        );
+        return;
+      }
+      if (result.status === 401) {
+        setDeleteError("Sign in again to delete this resume.");
+        return;
+      }
+      setDeleteError(result.status >= 500 ? "The resume could not be deleted. Try again." : (result.body?.error?.message ?? "The resume could not be deleted. Try again."));
+    } catch {
+      setDeleteError("The resume could not be deleted. Check your connection and try again.");
+    } finally {
+      deleteLock.current = false;
+      setDeletePending(false);
+    }
+  }
+
+  async function retryHistory() {
+    if (historyRefreshLock.current) {
+      return;
+    }
+    historyRefreshLock.current = true;
+    try {
+      const refreshed = await loadHistory(0, false);
+      setHistoryWarning((current) => (refreshed ? null : current));
+    } catch {
+      setHistoryWarning((current) => current);
+    } finally {
+      historyRefreshLock.current = false;
+    }
   }
 
   async function onFile(file: File | null) {
@@ -291,10 +424,12 @@ export function UploadPanel({
       sessionExpiredRef.current?.();
     }
     if (listed.status === 200 && listed.body) {
-      const nextItems = listed.body.evaluations;
+      const nextItems = listed.body.evaluations.filter((item) => !removedResumeIds.current.has(item.resumeId));
       setHistory((prev) => (append ? [...prev, ...nextItems] : nextItems));
       setHistoryPagination(listed.body.pagination ?? null);
+      return true;
     }
+    return false;
   }, []);
 
   useEffect(() => {
@@ -308,6 +443,9 @@ export function UploadPanel({
     setPreviewUnavailableReason(null);
     setPreviewSession(null);
     setSelectedFile(null);
+    setPendingDelete(null);
+    setDeleteError(null);
+    setDeletionNotice(null);
     if (!user) {
       return;
     }
@@ -335,11 +473,14 @@ export function UploadPanel({
       }),
     });
 
-    if (operationSeqRef.current !== seq) {
+    if (operationSeqRef.current !== seq || !stillPresent(undefined, targetVersionId)) {
       return;
     }
     if (result.status !== 200 || !result.body?.evaluation) {
       setStatus(result.body?.error?.message ?? "The server did not score the resume.");
+      return;
+    }
+    if (!stillPresent(result.body.evaluation.resumeId, result.body.evaluation.resumeVersionId)) {
       return;
     }
 
@@ -362,7 +503,7 @@ export function UploadPanel({
       error?: { message: string };
     }>(`/api/v1/evaluations/${item.id}`);
 
-    if (operationSeqRef.current !== seq) {
+    if (operationSeqRef.current !== seq || !stillPresent(item.resumeId, item.resumeVersionId)) {
       return;
     }
     if (result.status !== 200 || !result.body?.evaluation) {
@@ -456,7 +597,7 @@ export function UploadPanel({
         (filename.toLowerCase().endsWith(".docx") ? DOCX_MIME : PDF_MIME);
 
       const extracted = await extractDocument(filename, mimeType, fetchedBytes);
-      if (operationSeqRef.current !== seq) {
+      if (operationSeqRef.current !== seq || !stillPresent(loadedEval.resumeId, targetVersionId)) {
         return;
       }
 
@@ -495,22 +636,62 @@ export function UploadPanel({
   const completedCount = history.filter((item) => item.status === "complete").length;
   const latest = history[0];
 
+  const historyTitle = focus === "history" ? "My resumes" : "Recent resumes";
+
   return (
     <section className="grid min-w-0 gap-5">
+      {deletionNotice ? (
+        <p className="rounded-xl border border-[#E2E8F0] bg-white px-4 py-3 text-sm text-[#334155]" id="deletion-notice" role="status" tabIndex={-1}>
+          {deletionNotice}
+        </p>
+      ) : null}
+      {historyWarning ? (
+        <p className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3 text-sm text-[#92400E]" role="alert">
+          {historyWarning}
+          <button className="ml-3 font-semibold underline" onClick={() => void retryHistory()} type="button">
+            Retry list
+          </button>
+        </p>
+      ) : null}
       {evaluation && user ? (
       <div className="min-h-screen bg-[#F8F9FC] text-[#334155]">
         <header className="flex h-16 items-center justify-between border-b border-[#E2E8F0] bg-white px-6">
           <Brand />
-          <button
-            className="inline-flex min-h-11 items-center rounded-full bg-[#7C3AED] px-4 text-sm font-semibold text-white hover:bg-[#6D28D9]"
-            onClick={() => {
-              resetActiveResumeState();
-              onNewAnalysis?.();
-            }}
-            type="button"
-          >
-            + New analysis
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              aria-label={`Delete ${evaluation.originalFilename ?? "resume"}`}
+              className="grid h-11 w-11 place-items-center rounded-lg text-[#DC2626] hover:bg-[#FEE2E2] hover:text-[#B91C1C]"
+              onClick={() =>
+                requestDelete({
+                  id: evaluation.id,
+                  resumeId: evaluation.resumeId,
+                  resumeVersionId: evaluation.resumeVersionId,
+                  originalFilename: evaluation.originalFilename,
+                  mimeType: evaluation.mimeType,
+                  status: evaluation.status,
+                  score: evaluation.score,
+                  createdAt: evaluation.createdAt,
+                })
+              }
+              type="button"
+            >
+              <svg aria-hidden="true" className="h-5 w-5" fill="none" viewBox="0 0 20 20">
+                <path d="M4.5 6.5h11" stroke="currentColor" strokeWidth="1.6" />
+                <path d="M8 6.2V4.8h4v1.4" stroke="currentColor" strokeWidth="1.6" />
+                <path d="M6.2 6.5 6.8 16h6.4l.6-9.5" stroke="currentColor" strokeWidth="1.6" />
+              </svg>
+            </button>
+            <button
+              className="inline-flex min-h-11 items-center rounded-full bg-[#7C3AED] px-4 text-sm font-semibold text-white hover:bg-[#6D28D9]"
+              onClick={() => {
+                resetActiveResumeState();
+                onNewAnalysis?.();
+              }}
+              type="button"
+            >
+              + New analysis
+            </button>
+          </div>
         </header>
         <div className="px-6 py-6">
           <h1 className="text-2xl font-semibold text-[#17172B]">Resume evaluation</h1>
@@ -744,15 +925,26 @@ export function UploadPanel({
           activeEvaluationId={evaluation?.id ?? null}
           hasMore={historyPagination?.hasMore ?? false}
           items={history}
+          onDelete={requestDelete}
           onLoadMore={
             historyPagination?.nextOffset !== null && historyPagination?.nextOffset !== undefined
               ? () => void loadHistory(historyPagination.nextOffset!, true)
               : undefined
           }
           onOpen={(item) => void openHistory(item)}
+          title={historyTitle}
         />
       ) : null}
       </div>
+      {pendingDelete ? (
+        <DeleteResumeDialog
+          error={deleteError}
+          filename={pendingDelete.originalFilename ?? "this resume"}
+          onCancel={closeDeleteDialog}
+          onConfirm={() => void confirmDelete()}
+          pending={deletePending}
+        />
+      ) : null}
     </section>
   );
 }

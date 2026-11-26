@@ -75,16 +75,15 @@ describe("public evaluation presentation", () => {
       unavailable: [
         {
           label: "Resume filename",
-          explanation:
-            "The filename contains the candidate name, but it does not match an approved pattern, so these points are not available.",
+          explanation: "The filename includes a name, but this criterion has not been evaluated.",
         },
         {
           label: "Readability",
-          explanation: "Readability is not available yet because no scoring method has been approved.",
+          explanation: "This check is not yet available.",
         },
         {
           label: "Job description comparison",
-          explanation: "The description was received. Comparison is not available yet and does not change this score.",
+          explanation: "Job description comparison is not available yet and does not change this score.",
         },
       ],
       createdAt: "2026-11-17T00:00:00.000Z",
