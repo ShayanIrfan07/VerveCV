@@ -5,13 +5,10 @@ import type { ResumeBlock, ResumeDocument, ResumeSectionKind } from "./model.js"
 
 /**
  * Employer identity is the normalized header line. No company directory is used.
- * v2 separates a title from the employer on the same line and lets a later
- * title-and-date header reuse the employer line already read for that section.
+ * v3 splits a combined header only on a complete multi-word title phrase.
+ * A title word inside a longer employer name does not consume that name.
  */
-export const ROLE_MEASUREMENT_VERSION = "roles-2026-11-26-v2";
-
-const TITLE =
-  /\b(?:engineer|developer|manager|analyst|consultant|director|designer|scientist|specialist|coordinator|associate|officer|architect|accountant|representative|executive|founder|researcher|intern|president|administrator|marketer|recruiter|head\s+of)\b/iu;
+export const ROLE_MEASUREMENT_VERSION = "roles-2026-11-26-v3";
 
 const MONTHS: Record<string, number> = {
   jan: 1,
@@ -40,6 +37,7 @@ interface Duty {
 export interface RoleMeasurement {
   band: BandScore;
   shortBlockIds: string[];
+  organizations: string[];
 }
 
 export function measureRoles(document: ResumeDocument): RoleMeasurement | null {
@@ -91,7 +89,8 @@ export function measureRoles(document: ResumeDocument): RoleMeasurement | null {
   if (average === null) {
     return null;
   }
-  return { band: minimumBulletsScore(average), shortBlockIds };
+  const organizations = [...new Set(work.map((duty) => duty.organization).filter((name): name is string => typeof name === "string" && name.length > 0))];
+  return { band: minimumBulletsScore(average), shortBlockIds, organizations };
 }
 
 function dutyOf(entry: ParsedEntry, byId: Map<string, ResumeBlock>): Duty | null {
@@ -212,7 +211,7 @@ function organizationBesideTitle(value: string, side: "trailing" | "leading"): s
     for (let end = words.length - 1; end > 0; end -= 1) {
       const title = words.slice(0, end).join(" ");
       const org = words.slice(end).join(" ");
-      if (isTitlePhrase(title) && !isTitleResidue(org) && !isDateOnly(org)) {
+      if (isBoundedTitle(title) && !isTitleResidue(org) && !isDateOnly(org)) {
         return org;
       }
     }
@@ -221,15 +220,19 @@ function organizationBesideTitle(value: string, side: "trailing" | "leading"): s
   for (const start of starts) {
     const title = words.slice(start).join(" ");
     const org = words.slice(0, start).join(" ");
-    if (isTitlePhrase(title) && !isTitleResidue(org)) {
+    if (isBoundedTitle(title) && !isTitleResidue(org)) {
       return org;
     }
   }
   return null;
 }
 
+function isBoundedTitle(value: string): boolean {
+  return value.includes(" ") && isTitlePhrase(value);
+}
+
 function isTitlePhrase(value: string): boolean {
-  return TITLE_PHRASE.test(value.trim()) || TITLE.test(value);
+  return TITLE_PHRASE.test(value.trim());
 }
 
 function isTitleResidue(value: string): boolean {

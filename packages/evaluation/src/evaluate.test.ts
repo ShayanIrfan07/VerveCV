@@ -445,6 +445,18 @@ describe("evaluate", () => {
     const mixed = aggregate([synthetic("scored", 4, 4), synthetic("withheld", 7, null)], []);
     expect(mixed.baseScore).toBe(4);
     expect(mixed.denominator).toBe(4);
+    expect(mixed.finalScore).toBeNull();
+  });
+
+  it("keeps the final score null when penalties are complete and a positive criterion is withheld", () => {
+    const result = aggregate(
+      [synthetic("scored", 10, 10), synthetic("withheld", 7, null)],
+      [{ penaltyId: "sample", status: "scored", deduction: 1 }],
+    );
+    expect(result.penaltyStatus).toBe("evaluated");
+    expect(result.penaltyTotal).toBe(1);
+    expect(result.baseScore).toBe(10);
+    expect(result.finalScore).toBeNull();
   });
 });
 

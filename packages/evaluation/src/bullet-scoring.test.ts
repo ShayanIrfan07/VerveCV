@@ -49,7 +49,7 @@ describe("activated bullet-quality scoring", () => {
   });
 
   it("drops an extraction duplicate and still scores the remaining bullets", () => {
-    const document = workResume(["Northwind", "Engineer", "Jan 2020 - Present"], Array.from({ length: 5 }, () => STRONG));
+    const document = workResume(["Northwind", "Engineer", "Jan 2020 - Present"], Array.from({ length: 6 }, () => STRONG));
     const original = document.blocks.find((block) => block.type === "bullet");
     const copy = document.blocks.find((block) => block.type === "bullet" && block !== original);
     if (original && copy) {

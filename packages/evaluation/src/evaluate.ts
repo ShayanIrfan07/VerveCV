@@ -134,7 +134,7 @@ export function aggregate(
     penaltyTotal,
     penaltyStatus: pending ? "not_evaluated" : "evaluated",
     penalties,
-    finalScore: penaltyTotal === null ? null : clamp(baseScore - penaltyTotal, 0, 100),
+    finalScore: penaltyTotal === null || criteria.some((criterion) => criterion.status !== "scored") ? null : clamp(baseScore - penaltyTotal, 0, 100),
     denominator,
     criteria,
   };

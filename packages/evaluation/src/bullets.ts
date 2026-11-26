@@ -6,7 +6,7 @@ import type { ResumeBlock, ResumeDocument, ResumeSectionKind } from "./model.js"
  * Phase 5A length measurement. This function does not apply a score.
  * evaluate() reads the readings and applies the existing length band.
  */
-export const BULLET_ASSESSMENT_VERSION = "bullet-assessment-2026-11-26-v1";
+export const BULLET_ASSESSMENT_VERSION = "bullet-assessment-2026-11-26-v2";
 
 const BULLET_SECTIONS = new Set<ResumeSectionKind>(["WORK_EXPERIENCE", "LEADERSHIP_EXPERIENCE", "PROJECTS"]);
 const MINIMUM_WORDS = 12;
@@ -37,15 +37,14 @@ export interface BulletQualityAssessment {
 
 export function assessBulletQuality(document: ResumeDocument): BulletQualityAssessment {
   const eligible = bulletBlocks(document);
-  const excluded = excludedIds(eligible);
+  const excluded = excludedIds(document.blocks);
   const measured = eligible.filter((block) => !excluded.has(block.id));
   const readings = measured.map(readingFor);
-  const open = eligible.length >= 5;
-  const comparable = open && excluded.size === 0;
+  const open = measured.length >= 5;
   const percent = readings.length === 0 ? 0 : (readings.filter((item) => item.meetsMinimum).length / readings.length) * 100;
   return {
     version: BULLET_ASSESSMENT_VERSION,
-    eligibleCount: eligible.length,
+    eligibleCount: measured.length,
     unlock: open ? "open" : "below-minimum",
     length: {
       tokenizerVersion: TOKENIZER_VERSION,
@@ -53,7 +52,7 @@ export function assessBulletQuality(document: ResumeDocument): BulletQualityAsse
       reason: "A2",
       excludedBlockIds: [...excluded].sort(),
       readings,
-      band: comparable ? bulletLengthScore(percent) : null,
+      band: open ? bulletLengthScore(percent) : null,
     },
     actionVerbs: { appliedToScore: false, reason: "A3" },
     quantifiedMetrics: { appliedToScore: false, reason: "A4" },

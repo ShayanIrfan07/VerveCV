@@ -52,7 +52,8 @@ describe("phase 5A bullet measurement", () => {
       second.paragraphId = "p-1";
     }
     const result = assessBulletQuality(document);
-    expect(result.eligibleCount).toBe(2);
+    expect(result.eligibleCount).toBe(1);
+    expect(result.unlock).toBe("below-minimum");
     expect(result.length.excludedBlockIds).toEqual(["block-1"]);
     expect(result.length.readings).toHaveLength(1);
     expect(result.length.band).toBeNull();
