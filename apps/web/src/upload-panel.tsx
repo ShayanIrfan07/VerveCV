@@ -2,8 +2,11 @@ import { sampleDocxBytes, samplePdfBytes, type ResumeDocument } from "@vervecv/d
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest, type SessionUser } from "./api";
 import { PreviewView } from "./preview-view";
+import { Brand } from "./shell";
 import { card, field, primaryButton, secondaryButton } from "./ui";
 import {
+  EvaluationInsights,
+  EvaluationOverview,
   HistoryList,
   ScorePanel,
   type EvidenceLocator,
@@ -46,10 +49,25 @@ export type LocalExtractor = (
 export function UploadPanel({
   user,
   extractDocument = extractLocally,
+  focus,
+  onEvaluationActive,
+  onNewAnalysis,
+  onSessionExpired,
 }: {
   user: SessionUser | null;
   extractDocument?: LocalExtractor;
+  focus?: "dashboard" | "analyze" | "history";
+  onEvaluationActive?: (active: boolean) => void;
+  onNewAnalysis?: () => void;
+  onSessionExpired?: () => void;
 }) {
+  async function authed<T>(path: string, init: RequestInit = {}) {
+    const result = await apiRequest<T>(path, init);
+    if (result.status === 401) {
+      sessionExpiredRef.current?.();
+    }
+    return result;
+  }
   const [status, setStatus] = useState(
     "Choose a PDF or DOCX file. The preview is extracted in your browser.",
   );
@@ -63,9 +81,18 @@ export function UploadPanel({
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyPagination, setHistoryPagination] = useState<HistoryPagination | null>(null);
   const [highlight, setHighlight] = useState<EvidenceLocator | null>(null);
+  const [selectedFile, setSelectedFile] = useState<{ name: string; bytes: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [mobilePane, setMobilePane] = useState<"resume" | "feedback">("feedback");
+
+  useEffect(() => {
+    onEvaluationActive?.(evaluation !== null && user !== null);
+  }, [evaluation, onEvaluationActive, user]);
 
   // Monotonic operation token prevents late async completions from overwriting newer file selections or history views.
   const operationSeqRef = useRef(0);
+  const sessionExpiredRef = useRef(onSessionExpired);
+  sessionExpiredRef.current = onSessionExpired;
   // Session-local cache of verified version previews so reopening a historical score restores the exact version without network round-trips when already loaded.
   const versionPreviewCacheRef = useRef(
     new Map<string, { document: ResumeDocument; bytes: Uint8Array }>(),
@@ -78,6 +105,7 @@ export function UploadPanel({
     setHighlight(null);
     setPreviewUnavailableReason(null);
     setPreviewSession(null);
+    setSelectedFile(null);
   }
 
   async function onFile(file: File | null) {
@@ -124,9 +152,11 @@ export function UploadPanel({
     data: Uint8Array,
   ) {
     if (data.byteLength > UPLOAD_LIMIT_BYTES) {
+      setSelectedFile(null);
       setStatus("The file is larger than the 5 MiB upload limit.");
       return;
     }
+    setSelectedFile({ name: filename, bytes: data.byteLength });
 
     setStatus("Reading the file in your browser.");
     let document: ResumeDocument;
@@ -163,7 +193,7 @@ export function UploadPanel({
   ) {
     let intent: Awaited<ReturnType<typeof apiRequest<UploadIntentResponse>>>;
     try {
-      intent = await apiRequest<UploadIntentResponse>("/api/v1/resumes/upload-intents", {
+      intent = await authed<UploadIntentResponse>("/api/v1/resumes/upload-intents", {
         method: "POST",
         body: JSON.stringify({ filename, mimeType, sizeBytes: data.byteLength }),
       });
@@ -210,7 +240,7 @@ export function UploadPanel({
 
     let completed: Awaited<ReturnType<typeof apiRequest<CompleteResponse>>>;
     try {
-      completed = await apiRequest<CompleteResponse>(
+      completed = await authed<CompleteResponse>(
         `/api/v1/resumes/${intent.body.resumeId}/versions/${intent.body.versionId}/complete-upload`,
         { method: "POST", body: JSON.stringify({}) },
       );
@@ -257,6 +287,9 @@ export function UploadPanel({
       evaluations: HistoryItem[];
       pagination?: HistoryPagination;
     }>(`/api/v1/evaluations?limit=${HISTORY_PAGE_SIZE}&offset=${offset}`);
+    if (listed.status === 401) {
+      sessionExpiredRef.current?.();
+    }
     if (listed.status === 200 && listed.body) {
       const nextItems = listed.body.evaluations;
       setHistory((prev) => (append ? [...prev, ...nextItems] : nextItems));
@@ -265,15 +298,17 @@ export function UploadPanel({
   }, []);
 
   useEffect(() => {
+    versionPreviewCacheRef.current.clear();
+    setHistory([]);
+    setHistoryPagination(null);
+    setVersionId(null);
+    setEvaluation(null);
+    setFindings([]);
+    setHighlight(null);
+    setPreviewUnavailableReason(null);
+    setPreviewSession(null);
+    setSelectedFile(null);
     if (!user) {
-      versionPreviewCacheRef.current.clear();
-      setHistory([]);
-      setHistoryPagination(null);
-      setVersionId(null);
-      setEvaluation(null);
-      setFindings([]);
-      setHighlight(null);
-      setPreviewUnavailableReason(null);
       return;
     }
     void loadHistory(0, false);
@@ -286,7 +321,7 @@ export function UploadPanel({
     const seq = operationSeqRef.current;
     const targetVersionId = versionId;
     const idempotencyKey = crypto.randomUUID();
-    const result = await apiRequest<{
+    const result = await authed<{
       evaluation: ScoreView;
       findings: ScoreFinding[];
       error?: { message: string };
@@ -321,7 +356,7 @@ export function UploadPanel({
     setHighlight(null);
     setPreviewUnavailableReason(null);
 
-    const result = await apiRequest<{
+    const result = await authed<{
       evaluation: ScoreView;
       findings: ScoreFinding[];
       error?: { message: string };
@@ -384,7 +419,7 @@ export function UploadPanel({
     }
 
     try {
-      const viewResp = await apiRequest<{ url?: string }>(
+      const viewResp = await authed<{ url?: string }>(
         `/api/v1/resumes/${loadedEval.resumeId}/versions/${targetVersionId}/view-url`,
       );
       if (operationSeqRef.current !== seq) {
@@ -453,13 +488,136 @@ export function UploadPanel({
     (!evaluation || previewSession.versionId === evaluation.resumeVersionId)
       ? previewSession
       : null;
+  const showDashboard = focus === undefined || focus === "dashboard";
+  const showAnalyze = focus === undefined || focus === "analyze";
+  const showHistory = focus === undefined || focus === "history" || focus === "dashboard";
+  const countsReady = historyPagination !== null && historyPagination.hasMore === false;
+  const completedCount = history.filter((item) => item.status === "complete").length;
+  const latest = history[0];
 
   return (
-    <section className="grid min-w-0 gap-4">
-      <div className={card}>
-        <h2 className="text-lg font-semibold text-ink">Resume</h2>
+    <section className="grid min-w-0 gap-5">
+      {evaluation && user ? (
+      <div className="min-h-screen bg-[#F8F9FC] text-[#334155]">
+        <header className="flex h-16 items-center justify-between border-b border-[#E2E8F0] bg-white px-6">
+          <Brand />
+          <button
+            className="inline-flex min-h-11 items-center rounded-full bg-[#7C3AED] px-4 text-sm font-semibold text-white hover:bg-[#6D28D9]"
+            onClick={() => {
+              resetActiveResumeState();
+              onNewAnalysis?.();
+            }}
+            type="button"
+          >
+            + New analysis
+          </button>
+        </header>
+        <div className="px-6 py-6">
+          <h1 className="text-2xl font-semibold text-[#17172B]">Resume evaluation</h1>
+          <p className="mt-1 text-sm leading-6 text-[#334155]">Understand your weaknesses. Build a stronger resume.</p>
+          <div className="mt-4">
+            <EvaluationOverview evaluation={evaluation} />
+          </div>
+          <div className="mt-4 flex gap-2 lg:hidden">
+            <button
+              className={`min-h-11 flex-1 rounded-lg text-sm font-semibold ${mobilePane === "resume" ? "bg-[#7C3AED] text-white" : "bg-[#EDE9FE] text-[#6D28D9]"}`}
+              onClick={() => setMobilePane("resume")}
+              type="button"
+            >
+              Resume
+            </button>
+            <button
+              className={`min-h-11 flex-1 rounded-lg text-sm font-semibold ${mobilePane === "feedback" ? "bg-[#7C3AED] text-white" : "bg-[#EDE9FE] text-[#6D28D9]"}`}
+              onClick={() => setMobilePane("feedback")}
+              type="button"
+            >
+              Feedback
+            </button>
+          </div>
+          <div className="mt-4 grid w-full min-w-0 grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            <div className={`${mobilePane === "resume" ? "block" : "hidden"} min-w-0 lg:block lg:max-h-[calc(100vh-12rem)] lg:overflow-auto`} id="resume-preview">
+              {visiblePreview ? (
+                <PreviewView document={visiblePreview.document} fileBytes={visiblePreview.bytes} highlight={highlight} showExtractedText={false} />
+              ) : (
+                <p className="rounded-xl border border-[#E2E8F0] bg-white p-4 text-sm text-[#64748B]">
+                  {previewUnavailableReason ?? "The resume preview is not available for this result."}
+                </p>
+              )}
+            </div>
+            <div className={`${mobilePane === "feedback" ? "block" : "hidden"} min-w-0 lg:block lg:max-h-[calc(100vh-12rem)] lg:overflow-auto`}>
+              <EvaluationInsights
+                activeHighlight={highlight}
+                evaluation={evaluation}
+                findings={findings}
+                onHighlight={setHighlight}
+                previewUnavailableReason={previewUnavailableReason}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+      ) : null}
+      <div className={evaluation && user ? "hidden" : "contents"}>
+      {showDashboard && user ? (
+        <div className="grid gap-5">
+          <header>
+            <p className="text-sm text-muted">Workspace / Dashboard</p>
+            <h1 className="mt-2 text-3xl font-semibold text-ink">
+              Welcome back{user.displayName ? `, ${user.displayName}` : ""}.
+            </h1>
+            <p className="mt-2 text-body">Manage your resumes and review the checks that are ready.</p>
+          </header>
+          <div className="rounded-2xl bg-hero p-6 text-[#6B5C85] sm:p-8">
+            <p className="text-xs font-bold tracking-wide text-primary-bright">YOUR NEXT CAREER MOVE</p>
+            <h2 className="mt-2 text-3xl font-semibold text-[#21143D]">Build a stronger resume.</h2>
+            <p className="mt-2 max-w-xl">Discover the feedback the server can already support.</p>
+          </div>
+          <div className="grid gap-5 md:grid-cols-3">
+            <article className={card}>
+              <h2 className="text-3xl font-semibold text-ink">{countsReady ? history.length : "—"}</h2>
+              <p className="text-sm text-muted">Total resumes</p>
+            </article>
+            <article className={card}>
+              <h2 className="text-3xl font-semibold text-ink">{countsReady ? completedCount : "—"}</h2>
+              <p className="text-sm text-muted">Completed</p>
+            </article>
+            <article className={card}>
+              <h2 className="text-3xl font-semibold text-ink">
+                {countsReady && latest ? (latest.score ?? "—") : "—"}
+              </h2>
+              <p className="text-sm text-muted">Latest score</p>
+            </article>
+          </div>
+          {countsReady ? null : (
+            <p className="text-sm text-muted">Totals stay hidden until every resume on this account has been loaded.</p>
+          )}
+        </div>
+      ) : null}
+
+      {showAnalyze ? (
+      <div
+        className={`${card} ${dragging ? "border-primary bg-primary-muted" : ""}`}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragging(false);
+          void onFile(event.dataTransfer.files[0] ?? null);
+        }}
+      >
+        <h2 className="text-2xl font-semibold text-ink">New resume analysis</h2>
         <p className="mt-2 text-sm leading-6 text-muted">{status}</p>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 rounded-xl border-2 border-dashed border-[#C4B5FD] bg-[#FAF9FF] px-5 py-12 text-center">
+          <h3 className="text-xl font-semibold text-ink">Drag and drop your resume</h3>
+          <p className="mt-1 text-sm text-muted">or browse files from your device</p>
+          <div className="mt-4 flex flex-wrap justify-center gap-2">
           <label className={primaryButton}>
             Choose file
             <input
@@ -487,10 +645,21 @@ export function UploadPanel({
           >
             Preview sample DOCX
           </button>
+          </div>
+          <p className="mt-3 text-sm text-muted">PDF and DOCX, up to 5 MiB</p>
         </div>
+        {selectedFile ? (
+          <p className="mt-4 text-sm text-body">
+            Selected file: {selectedFile.name} ({selectedFile.bytes} bytes)
+          </p>
+        ) : null}
+        <p className="mt-4 rounded-lg bg-info-bg px-4 py-3 text-sm text-info">
+          Your resume is subject to the 90-day retention policy.
+        </p>
       </div>
+      ) : null}
 
-      {versionId ? (
+      {showAnalyze && versionId ? (
         <form
           className={card}
           onSubmit={(event) => {
@@ -532,20 +701,45 @@ export function UploadPanel({
         </form>
       ) : null}
 
-      {evaluation ? (
-        <ScorePanel
-          activeHighlight={highlight}
-          evaluation={evaluation}
-          findings={findings}
-          onHighlight={setHighlight}
-          onPreview={() => {
-            document.getElementById("resume-preview")?.scrollIntoView({ block: "nearest" });
-          }}
-          previewUnavailableReason={previewUnavailableReason}
-        />
+      {showAnalyze && (evaluation || visiblePreview) ? (
+        <div
+          className={`grid w-full min-w-0 items-start gap-6 ${
+            evaluation && visiblePreview ? "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" : ""
+          }`}
+        >
+          {evaluation ? (
+            <div className="order-1 min-w-0 lg:col-start-1 lg:row-start-1 lg:max-w-none">
+              <h2 className="text-2xl font-semibold text-ink">Resume evaluation</h2>
+              <p className="mt-1 text-sm leading-6 text-body">Understand your weaknesses. Build a stronger resume.</p>
+            </div>
+          ) : null}
+          {visiblePreview ? (
+            <div className="order-3 min-w-0 lg:order-none lg:col-start-1 lg:row-start-2 lg:max-h-[calc(100vh-8rem)] lg:overflow-auto" id="resume-preview">
+              <PreviewView
+                document={visiblePreview.document}
+                fileBytes={visiblePreview.bytes}
+                highlight={highlight}
+              />
+            </div>
+          ) : null}
+          {evaluation ? (
+            <div className="order-2 min-w-0 lg:order-none lg:col-start-2 lg:row-span-2 lg:max-h-[calc(100vh-8rem)] lg:overflow-auto">
+              <ScorePanel
+                activeHighlight={highlight}
+                evaluation={evaluation}
+                findings={findings}
+                onHighlight={setHighlight}
+                onPreview={() => {
+                  document.getElementById("resume-preview")?.scrollIntoView({ block: "nearest" });
+                }}
+                previewUnavailableReason={previewUnavailableReason}
+              />
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
-      {user ? (
+      {showHistory && user ? (
         <HistoryList
           activeEvaluationId={evaluation?.id ?? null}
           hasMore={historyPagination?.hasMore ?? false}
@@ -558,16 +752,7 @@ export function UploadPanel({
           onOpen={(item) => void openHistory(item)}
         />
       ) : null}
-
-      {visiblePreview ? (
-        <div id="resume-preview">
-        <PreviewView
-          document={visiblePreview.document}
-          fileBytes={visiblePreview.bytes}
-          highlight={highlight}
-        />
-        </div>
-      ) : null}
+      </div>
     </section>
   );
 }

@@ -64,15 +64,15 @@ describe("resume analysis panel", () => {
     );
 
     expect(container.querySelector("section")?.className).toContain("bg-card");
-    expect(container.textContent).toContain("Resume analysis");
+    expect(container.textContent).toContain("Resume health");
     expect(container.textContent).toContain("MinaKapoor_CV.pdf");
     expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("13");
     expect(container.textContent).toContain("Provisional");
     expect(container.textContent).toContain("not a complete 100-point score");
     expect(container.textContent).not.toContain("13/13");
-    expect(container.textContent).toContain("3 checks passed");
+    expect(container.textContent).toContain("What's working well");
     expect(container.textContent).toContain("Required sections");
-    expect(container.textContent).toContain("Passed");
+    expect(container.textContent).toContain("Strong");
     expect(container.textContent).toContain("Contact information");
     expect(container.textContent).toContain("Unique skills");
     expect(container.textContent).not.toContain("4/4");
@@ -139,8 +139,7 @@ describe("resume analysis panel", () => {
 
     expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("11");
     expect(container.textContent).not.toContain("11/13");
-    expect(container.textContent).toContain("2 checks passed");
-    expect(container.textContent).toContain("Review");
+    expect(container.textContent).toContain("Needs improvement");
     expect(container.textContent).not.toContain("2/4");
     expect(container.textContent).toContain("A phone number was not found.");
     expect(container.textContent).not.toContain("No confirmed issues");
@@ -154,6 +153,97 @@ describe("resume analysis panel", () => {
       suggestion?.focus();
     });
     expect(onHighlight).toHaveBeenCalled();
+    cleanup();
+  });
+
+  it("shows an unavailable score without a denominator or private scoring terms", () => {
+    const { container, cleanup } = renderPanel(
+      <ScorePanel
+        activeHighlight={null}
+        evaluation={evaluation({
+          score: null,
+          notice: "A final score is not available.",
+        })}
+        findings={[]}
+        onHighlight={() => undefined}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("—");
+    expect(container.textContent).toContain("Score unavailable");
+    expect(container.textContent).not.toContain("/100");
+    expect(container.textContent).not.toContain("OPEN_DECISION");
+    expect(container.textContent).not.toContain("rubric-2026-11-12-provisional");
+    expect(container.textContent).not.toContain("DETECTOR_VERSION");
+    expect(container.textContent).toContain("Your improvement plan is ready.");
+    expect(container.textContent).toContain("Not fully evaluated");
+    expect(container.textContent).not.toContain("%");
+    cleanup();
+  });
+
+  it("filters findings without turning withheld checks into failures", () => {
+    const { container, cleanup } = renderPanel(
+      <ScorePanel
+        activeHighlight={null}
+        evaluation={evaluation({ score: null, areas: [{ label: "Contact information", state: "passed" }] })}
+        findings={[
+          {
+            id: "spell",
+            kind: "note",
+            message: 'Possible misspelling "Recieve".',
+            suggestion: "Receive",
+            evidence: [],
+          },
+        ]}
+        onHighlight={() => undefined}
+      />,
+    );
+
+    expect(container.textContent).toContain("What's working well");
+    expect(container.textContent).toContain("Contact information");
+    expect(container.querySelector("details")?.open).toBe(false);
+    expect(container.textContent).toContain("Not fully evaluated");
+    const card = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Recieve"));
+    act(() => {
+      card?.click();
+    });
+    expect(container.textContent).toContain("Suggested approach");
+    expect(container.textContent).toContain("Receive");
+    const summary = container.querySelector("details");
+    act(() => {
+      summary?.querySelector("summary")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      if (summary) {
+        summary.open = true;
+      }
+    });
+    expect(container.textContent).toContain("Readability");
+    expect(container.textContent).toContain("not available");
+    expect(container.textContent).not.toContain("Failed");
+    expect(container.textContent).not.toContain("/100");
+    cleanup();
+  });
+
+  it("shows a completed score without a denominator", () => {
+    const { container, cleanup } = renderPanel(
+      <ScorePanel
+        activeHighlight={null}
+        evaluation={evaluation({
+          status: "complete",
+          score: 13,
+          notice: "This result is complete.",
+          unavailable: [],
+        })}
+        findings={[]}
+        onHighlight={() => undefined}
+      />,
+    );
+
+    expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("13");
+    expect(container.textContent).toContain("Complete");
+    expect(container.textContent).not.toContain("Provisional");
+    expect(container.textContent).not.toContain("/100");
+    expect(container.textContent).not.toContain("%");
+    expect(container.textContent).toContain("No confirmed issues in the scored checks. Other checks are not yet available.");
     cleanup();
   });
 });

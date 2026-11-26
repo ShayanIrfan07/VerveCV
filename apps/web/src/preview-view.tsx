@@ -1,8 +1,10 @@
 import type { ResumeDocument } from "@vervecv/documents";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { EvidenceLocator } from "./score-panel";
 
-const SCALE = 1.25;
+const DEFAULT_SCALE = 1.25;
+const MIN_SCALE = 0.2;
+const MAX_SCALE = 3;
 
 export interface NormalizedSpan {
   startOffset: number;
@@ -22,6 +24,7 @@ interface PreviewViewProps {
   document: ResumeDocument;
   fileBytes: Uint8Array | null;
   highlight?: EvidenceLocator | null;
+  showExtractedText?: boolean;
 }
 
 /**
@@ -273,11 +276,34 @@ export function computePdfHighlightBoxes(
   };
 }
 
-export function PreviewView({ document, fileBytes, highlight = null }: PreviewViewProps) {
+export function PreviewView({ document, fileBytes, highlight = null, showExtractedText = true }: PreviewViewProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [expanded, setExpanded] = useState(false);
+  const viewerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setSelectedId(null);
+    setExpanded(false);
+  }, [document]);
+
+  useLayoutEffect(() => {
+    const viewer = viewerRef.current;
+    setScale(!viewer || viewer.clientWidth <= 0 ? DEFAULT_SCALE : fitScale(viewer, document));
+  }, [document, expanded]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    const observer = new ResizeObserver(() => {
+      if (viewer.clientWidth > 0) {
+        setScale(fitScale(viewer, document));
+      }
+    });
+    observer.observe(viewer);
+    return () => observer.disconnect();
   }, [document]);
 
   const activeBlockId = highlight?.blockId ?? selectedId;
@@ -293,29 +319,71 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
   const pdfGeometry =
     !docx && fileBytes && highlight ? computePdfHighlightBoxes(evidenceBlock, highlight) : null;
 
+  const preview = docx || !fileBytes ? (
+    <DocxPreview
+      activeBlockId={activeBlockId}
+      activeSpan={activeSpan}
+      document={document}
+      onSelect={setSelectedId}
+    />
+  ) : (
+    <PdfPreview
+      bytes={fileBytes}
+      document={document}
+      highlightPage={highlight?.page}
+      highlightTone={highlight?.tone}
+      overlayBoxes={pdfGeometry?.boxes ?? []}
+      scale={scale}
+      usedTextFallback={pdfGeometry?.usedTextFallback ?? false}
+      viewerRef={viewerRef}
+    />
+  );
+
+  const fitted = fitScale(viewerRef.current, document);
+  const zoomLabel = fitted > 0 ? `${Math.round((scale / fitted) * 100)}%` : "100%";
+
   return (
-    <div className="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_280px]">
-      <div className="min-w-0 rounded-2xl border border-line bg-card p-4">
-        {docx || !fileBytes ? (
-          <DocxPreview
-            activeBlockId={activeBlockId}
-            activeSpan={activeSpan}
-            document={document}
-            onSelect={setSelectedId}
-          />
-        ) : (
-          <PdfPreview
-            bytes={fileBytes}
-            document={document}
-            overlayBoxes={pdfGeometry?.boxes ?? []}
-            usedTextFallback={pdfGeometry?.usedTextFallback ?? false}
-          />
-        )}
+    <div className={expanded ? "fixed inset-0 z-50 overflow-auto bg-[#17172B]/40 p-4 sm:p-6" : "min-w-0"}>
+      <div className={expanded ? "mx-auto flex h-full w-full max-w-6xl flex-col" : "min-w-0"}>
+      <div className={`rounded-xl border border-[#E2E8F0] bg-white p-4 ${expanded ? "flex min-h-0 flex-1 flex-col" : ""}`}>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-semibold text-[#17172B]">Resume preview</h2>
+          <div className="flex flex-wrap items-center justify-end gap-1">
+            <button aria-label="Zoom out" className={viewerButton} onClick={() => setScale((current) => clampScale(current / 1.1))} type="button">
+              −
+            </button>
+            <button className={viewerButton} onClick={() => setScale(fitScale(viewerRef.current, document))} type="button">
+              {zoomLabel}
+            </button>
+            <button aria-label="Zoom in" className={viewerButton} onClick={() => setScale((current) => clampScale(current * 1.1))} type="button">
+              +
+            </button>
+            <button className={viewerButton} onClick={() => setScale(fitScale(viewerRef.current, document))} type="button">
+              Fit width
+            </button>
+            <button aria-label={expanded ? "Close preview" : "Expand"} className={viewerButton} onClick={() => setExpanded((current) => !current)} type="button">
+              {expanded ? "Close" : "⛶"}
+            </button>
+            {fileBytes ? (
+              <button className={viewerButton} onClick={() => downloadDocument(document, fileBytes)} type="button">
+                Download
+              </button>
+            ) : null}
+          </div>
+        </div>
+        <div className={`rounded-lg bg-[#F1F5F9] p-4 ${expanded ? "flex min-h-0 flex-1 flex-col" : ""}`}>
+          {docx || !fileBytes ? (
+            <div className={expanded ? "min-h-0 flex-1 overflow-auto" : "max-h-[70vh] overflow-auto"} ref={viewerRef}>
+              {preview}
+            </div>
+          ) : (
+            preview
+          )}
+        </div>
       </div>
-      <aside className="rounded-2xl border border-line bg-card p-4 text-ink">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
-          Extracted text
-        </h2>
+      <details className={showExtractedText ? "mt-3 rounded-xl border border-line bg-card p-4 text-ink" : "hidden"}>
+        <summary className="cursor-pointer text-sm font-semibold text-ink">Show extracted text</summary>
+        <h2 className="mt-4 text-sm font-semibold uppercase tracking-wide text-muted">Extracted text</h2>
         <div className="mt-4 space-y-5">
           {document.sections.map((section) => (
             <section className="space-y-1" data-section-id={section.id} key={section.id}>
@@ -356,9 +424,48 @@ export function PreviewView({ document, fileBytes, highlight = null }: PreviewVi
               : `UTF-16 offsets ${activeBlock.startOffset}–${activeBlock.endOffset}`}
           </p>
         ) : null}
-      </aside>
+      </details>
+      </div>
     </div>
   );
+}
+
+const viewerButton =
+  "inline-flex h-8 min-w-8 items-center justify-center rounded-lg border border-[#E2E8F0] bg-white px-2 text-xs font-semibold text-[#334155]";
+
+function clampScale(value: number): number {
+  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, value));
+}
+
+function fitScale(viewer: HTMLDivElement | null, document: ResumeDocument): number {
+  const page = pageInfo(document)[0];
+  const width = viewer?.clientWidth ?? 0;
+  if (!page || width <= 0) {
+    return DEFAULT_SCALE;
+  }
+  return clampScale((width - 24) / page.width);
+}
+
+function pageInfo(document: ResumeDocument): Array<{ page: number; width: number; height: number }> {
+  const pages = Array.isArray(document.metadata["pages"]) ? document.metadata["pages"] : [];
+  return pages.flatMap((page) => {
+    const info = page as { page?: number; width?: number; height?: number };
+    if (typeof info.page !== "number" || typeof info.width !== "number" || typeof info.height !== "number") {
+      return [];
+    }
+    return [{ page: info.page, width: info.width, height: info.height }];
+  });
+}
+
+function downloadDocument(document: ResumeDocument, bytes: Uint8Array): void {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const url = URL.createObjectURL(new Blob([copy.buffer], { type: document.mimeType }));
+  const link = globalThis.document.createElement("a");
+  link.href = url;
+  link.download = document.filename || "resume";
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function extractedBlockClass(type: string, quietSelection: boolean): string {
@@ -473,46 +580,102 @@ function DocxPreview({
 function PdfPreview({
   bytes,
   document,
+  highlightPage,
+  highlightTone,
   overlayBoxes,
+  scale,
   usedTextFallback,
+  viewerRef,
 }: {
   bytes: Uint8Array;
   document: ResumeDocument;
+  highlightPage?: number;
+  highlightTone?: "issue" | "note";
   overlayBoxes: PdfOverlayBox[];
+  scale: number;
   usedTextFallback: boolean;
+  viewerRef: RefObject<HTMLDivElement | null>;
 }) {
-  const pages = Array.isArray(document.metadata["pages"]) ? document.metadata["pages"] : [];
+  const pages = pageInfo(document);
+  const [visiblePage, setVisiblePage] = useState(pages[0]?.page ?? 1);
+  const scroller = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (highlightPage === undefined) {
+      return;
+    }
+    const target = scroller.current?.querySelector<HTMLElement>(`#resume-page-${highlightPage}`);
+    if (target && scroller.current) {
+      scroller.current.scrollTop = target.offsetTop;
+      setVisiblePage(highlightPage);
+    }
+  }, [highlightPage]);
+
+  function showPage(page: number) {
+    const target = scroller.current?.querySelector<HTMLElement>(`#resume-page-${page}`);
+    if (target && scroller.current) {
+      scroller.current.scrollTop = target.offsetTop;
+    }
+    setVisiblePage(page);
+  }
+
+  const currentIndex = Math.max(0, pages.findIndex((page) => page.page === visiblePage));
 
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-3">
       {usedTextFallback ? (
         <p
-          className="rounded-lg border border-line bg-panel px-3 py-2 text-xs text-muted"
+          className="rounded-lg border border-line bg-card px-3 py-2 text-xs text-muted"
           data-testid="pdf-position-fallback"
         >
           Exact PDF coordinates are unavailable for this finding; highlighted in the extracted text panel.
         </p>
       ) : null}
-      {pages.map((page) => {
-        const info = page as { page?: number; width?: number; height?: number };
-        if (
-          typeof info.page !== "number" ||
-          typeof info.width !== "number" ||
-          typeof info.height !== "number"
-        ) {
-          return null;
-        }
-        return (
-          <PdfPage
-            boxes={overlayBoxes.filter((box) => box.page === info.page)}
-            bytes={bytes}
-            height={info.height}
-            key={info.page}
-            pageNumber={info.page}
-            width={info.width}
-          />
-        );
-      })}
+      <div className="grid max-h-[70vh] gap-4 overflow-auto" ref={viewerRef}>
+        <div className="grid gap-4" ref={scroller}>
+          {pages.map((info) => (
+            <PdfPage
+              boxes={overlayBoxes.filter((box) => box.page === info.page)}
+              bytes={bytes}
+              height={info.height}
+              highlightTone={highlightTone}
+              key={info.page}
+              pageNumber={info.page}
+              scale={scale}
+              width={info.width}
+            />
+          ))}
+        </div>
+      </div>
+      {pages.length > 0 ? (
+        <div className="flex items-center justify-center gap-3 text-sm text-[#64748B]">
+          {pages.length > 1 ? (
+            <button
+              aria-label="Previous page"
+              className={viewerButton}
+              disabled={currentIndex <= 0}
+              onClick={() => showPage(pages[currentIndex - 1]?.page ?? visiblePage)}
+              type="button"
+            >
+              ‹
+            </button>
+          ) : null}
+          <span>
+            Page {currentIndex + 1} of {pages.length}
+          </span>
+          {pages.length > 1 ? (
+            <button
+              aria-label="Next page"
+              className={viewerButton}
+              disabled={currentIndex >= pages.length - 1}
+              onClick={() => showPage(pages[currentIndex + 1]?.page ?? visiblePage)}
+              type="button"
+            >
+              ›
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -522,22 +685,28 @@ function PdfPage({
   pageNumber,
   width,
   height,
+  scale,
   boxes,
+  highlightTone,
 }: {
   bytes: Uint8Array;
   pageNumber: number;
   width: number;
   height: number;
+  scale: number;
   boxes: PdfOverlayBox[];
+  highlightTone?: "issue" | "note";
 }) {
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
+  const cssWidth = Math.max(1, Math.round(width * scale));
+  const cssHeight = Math.max(1, Math.round(height * scale));
 
   useEffect(() => {
     if (!canvas) {
       return;
     }
     let cancelled = false;
-    void renderPage(bytes, pageNumber, canvas).catch(() => {
+    void renderPage(bytes, pageNumber, canvas, scale).catch(() => {
       if (!cancelled) {
         canvas.replaceChildren();
       }
@@ -545,17 +714,18 @@ function PdfPage({
     return () => {
       cancelled = true;
     };
-  }, [bytes, canvas, pageNumber]);
+  }, [bytes, canvas, pageNumber, scale]);
 
   return (
     <div
-      className="relative mx-auto w-full max-w-full bg-slate-100"
-      style={{ maxWidth: width * SCALE, aspectRatio: `${width} / ${height}` }}
+      className="relative mx-auto max-w-full border border-[#CBD5E1] bg-white"
+      id={`resume-page-${pageNumber}`}
+      style={{ width: cssWidth, height: cssHeight }}
     >
-      <canvas className="absolute inset-0 h-full w-full" ref={setCanvas} />
+      <canvas className="block" ref={setCanvas} style={{ width: cssWidth, height: cssHeight }} />
       {boxes.map((box, index) => (
         <span
-          className="pointer-events-none absolute border-b-2 border-primary/80 bg-primary/15"
+          className={`pointer-events-none absolute border ${highlightTone === "note" ? "border-[#DDD6FE] bg-[#EDE9FE]" : "border-[#D97706] bg-[#FEF3C7]"}`}
           data-precision={box.precision}
           data-testid="pdf-highlight-box"
           key={`${box.x}-${box.y}-${index}`}
@@ -576,6 +746,7 @@ async function renderPage(
   bytes: Uint8Array,
   pageNumber: number,
   canvas: HTMLCanvasElement,
+  scale: number,
 ): Promise<void> {
   const pdfjs = await loadPdfjs();
   const task = pdfjs.getDocument({
@@ -587,9 +758,10 @@ async function renderPage(
   const pdf = await task.promise;
   try {
     const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: SCALE });
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    const pixelRatio = globalThis.devicePixelRatio || 1;
+    const viewport = page.getViewport({ scale: scale * pixelRatio });
+    canvas.width = Math.max(1, Math.floor(viewport.width));
+    canvas.height = Math.max(1, Math.floor(viewport.height));
     const context = canvas.getContext("2d");
     if (!context || !page.render) {
       return;
