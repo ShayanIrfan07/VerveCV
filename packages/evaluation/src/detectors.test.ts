@@ -49,6 +49,12 @@ describe("phase 4 detectors", () => {
     expect(first.every((hit) => hit.quality === "high" && hit.startOffset >= 0 && hit.endOffset > hit.startOffset)).toBe(true);
   });
 
+  it("counts repeated text and aliases of one canonical keyword once per entry", () => {
+    const hits = matchEntryBullets(["React React.js ReactJS React", "React again and React.js"], dictionary);
+    expect(hits.map((hit) => hit.canonical)).toEqual(["react"]);
+    expect(matchEntryBullets(["Java Java Java"], dictionary)).toHaveLength(1);
+  });
+
   it("keeps the same keyword set when bullet order changes", () => {
     const forward = matchEntryBullets(["Java services", "JavaScript UI"], dictionary).map((hit) => hit.canonical);
     const backward = matchEntryBullets(["JavaScript UI", "Java services"], dictionary).map((hit) => hit.canonical);
