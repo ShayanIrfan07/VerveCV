@@ -1,5 +1,5 @@
 /** A bullet counts once, however many quantities it contains. */
-export const QUANTITY_RECOGNIZER_VERSION = "quantities-2026-11-26-v2";
+export const QUANTITY_RECOGNIZER_VERSION = "quantities-2026-11-26-v3";
 
 const COUNT_NOUN = "engineers|developers|people|members|clients|customers|users|requests|transactions|orders|apis|microservices|services|tickets|bugs|servers|nodes|records|accounts|invoices|patients|candidates|shipments";
 
@@ -15,7 +15,7 @@ const MASKS = [
   /\bport\s+\d{2,5}\b|:\d{2,5}\b/giu,
   /\b\d{1,2}:\d{2}\b/gu,
   /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:,?\s+(?:19|20)\d{2})?/giu,
-  /\b(?:serial(?:\s+(?:no|number))?|s\/n|identifier|ref(?:erence)?(?:\s+no)?|invoice\s*(?:no|number)|account\s*(?:no|number)|\bid)\b\.?\s*#?\s*[a-z0-9][a-z0-9,.-]*/giu,
+  /\b(?:serial(?:\s+(?:no|number))?|s\/n|identifier|ref(?:erence)?(?:\s+no)?|invoice\s*(?:no|number)|account\s*(?:no|number)|model|\bid)\b\.?\s*#?\s*[a-z0-9][a-z0-9,.-]*/giu,
   /#\d[\d,]*/gu,
 ];
 
@@ -36,7 +36,8 @@ function maskExclusions(text: string): string {
   return value.replace(/\b(?:19|20)\d{2}\b/gu, (match, offset: number, source: string) => {
     const before = source.slice(0, offset);
     const after = source.slice(offset + match.length);
-    if (/[$₹€£]\s*$/u.test(before) || new RegExp(String.raw`^\s+(?:${COUNT_NOUN})\b`, "iu").test(after)) {
+    const unitAfter = /^\s*(?:%|x|×|percent|ms|milliseconds|sec|secs|seconds|min|mins|minutes|hr|hrs|hours|rps|qps|req\/s|mb\/s)\b/iu;
+    if (/[$₹€£]\s*$/u.test(before) || unitAfter.test(after) || new RegExp(String.raw`^\s+(?:${COUNT_NOUN})\b`, "iu").test(after)) {
       return match;
     }
     return " ".repeat(match.length);

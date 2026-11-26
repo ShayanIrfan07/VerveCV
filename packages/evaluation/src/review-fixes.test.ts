@@ -59,11 +59,23 @@ describe("review fixes", () => {
     expect(hasMeasurableImpact("Attempted to reduce downtime by 15%.")).toBe(false);
     expect(hasMeasurableImpact("Reduced costs while managing 12 engineers.")).toBe(false);
     expect(hasMeasurableImpact("Reduced costs by 20% while managing 12 engineers.")).toBe(true);
+    expect(hasMeasurableImpact("Reduced costs and completed 80% of assigned tasks.")).toBe(false);
+    expect(hasMeasurableImpact("Reduced costs over 3 months.")).toBe(false);
+    expect(hasMeasurableImpact("Reduced costs by an unspecified amount while achieving 90% test coverage.")).toBe(false);
+    expect(hasMeasurableImpact("Did not reduce costs by 20%.")).toBe(false);
+    expect(hasMeasurableImpact("Expected to increase revenue by 30%.")).toBe(false);
+    expect(hasMeasurableImpact("Reduced costs by 20%.")).toBe(true);
+    expect(hasMeasurableImpact("Reduced latency from 500ms to 200ms.")).toBe(true);
+    expect(hasMeasurableImpact("Reduced costs by 20%; planned to improve reliability.")).toBe(true);
+    expect(hasMeasurableImpact("Increased revenue by $50,000.")).toBe(true);
   });
 
   it("keeps currency and stated counts, and skips years, versions, phones, and identifiers", () => {
-    for (const text of ["$2025", "₹2025", "$2,000", "2024 transactions", "50 invoices", "200 patients", "30 candidates", "12 shipments", "5 lakh in revenue", "10-20", "2.5x", "200 req/s"]) {
+    for (const text of ["$2025", "₹2025", "$2,000", "2024 transactions", "50 invoices", "200 patients", "30 candidates", "12 shipments", "5 lakh in revenue", "10-20", "2.5x", "200 req/s", "Achieved 2025 rps", "Processed 2024 transactions", "Generated revenue of $2025", "Reduced latency to 2020ms", "Processed 123,456 transactions"]) {
       expect(hasMeaningfulQuantity(text), text).toBe(true);
+    }
+    for (const text of ["Worked during 2020–2024", "Employment period 01/2024–05/2025", "Model 123,456", "Serial number 123,456"]) {
+      expect(hasMeaningfulQuantity(text), text).toBe(false);
     }
     for (const text of ["2025", "Java 22", "OAuth 2.0", "Jan 12, 2024", "+91 98765 43210", "09876543210", "9876543210", "10.0.0.8", "port 443", "ID 10,000", "serial number SN-44921"]) {
       expect(hasMeaningfulQuantity(text), text).toBe(false);
