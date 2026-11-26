@@ -276,10 +276,14 @@ describe("evaluate", () => {
     }
   });
 
-  it("withholds bullet criteria once five bullets exist because the recognizers are not approved", () => {
+  it("scores five short action-verb bullets and withholds role counts when no role can be read", () => {
     const result = evaluate(resumeWithBullets(5, "Led the migration."), options);
-    const rule = result.criteria.find((item) => item.ruleId === "bullet-length");
-    expect(rule?.status).toBe("withheld");
+    expect(ruleScore(result, "bullet-length")).toBe(0);
+    expect(ruleScore(result, "action-verbs")).toBe(10);
+    expect(ruleScore(result, "quantified-metrics")).toBe(0);
+    expect(ruleScore(result, "impact-metrics")).toBe(0);
+    expect(result.criteria.find((item) => item.ruleId === "minimum-bullets-per-role")?.status).toBe("withheld");
+    expect(result.finalScore).toBeNull();
   });
 
   it("awards one contact point per present field", () => {
@@ -441,6 +445,18 @@ describe("evaluate", () => {
     const mixed = aggregate([synthetic("scored", 4, 4), synthetic("withheld", 7, null)], []);
     expect(mixed.baseScore).toBe(4);
     expect(mixed.denominator).toBe(4);
+    expect(mixed.finalScore).toBeNull();
+  });
+
+  it("keeps the final score null when penalties are complete and a positive criterion is withheld", () => {
+    const result = aggregate(
+      [synthetic("scored", 10, 10), synthetic("withheld", 7, null)],
+      [{ penaltyId: "sample", status: "scored", deduction: 1 }],
+    );
+    expect(result.penaltyStatus).toBe("evaluated");
+    expect(result.penaltyTotal).toBe(1);
+    expect(result.baseScore).toBe(10);
+    expect(result.finalScore).toBeNull();
   });
 });
 

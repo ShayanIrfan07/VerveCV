@@ -43,5 +43,7 @@ export {
 } from "./grammar.js";
 export type { DictionarySource, GrammarEvaluationOptions, SpellChecker } from "./grammar.js";
 export { formattingConsistencyRule } from "./formatting.js";
+export { assessBulletQuality, BULLET_ASSESSMENT_VERSION } from "./bullets.js";
+export type { BulletLengthReading, BulletQualityAssessment } from "./bullets.js";
 export { aggregate, clamp, evaluate, SKILL_ALIAS_VERSION } from "./evaluate.js";
 export type { CandidateType, EvaluationOptions, EvaluationResult, JdMatch, PenaltyAssessment } from "./evaluate.js";
