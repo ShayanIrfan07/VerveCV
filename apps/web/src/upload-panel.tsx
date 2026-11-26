@@ -102,6 +102,7 @@ export function UploadPanel({
   historyRef.current = history;
   const removedResumeIds = useRef(new Set<string>());
   const removedVersionIds = useRef(new Set<string>());
+  const historyRefreshLock = useRef(false);
   const sessionExpiredRef = useRef(onSessionExpired);
   sessionExpiredRef.current = onSessionExpired;
   // Session-local cache of verified version previews so reopening a historical score restores the exact version without network round-trips when already loaded.
@@ -194,10 +195,14 @@ export function UploadPanel({
       }
       if (result.status === 404) {
         forgetResume(target.resumeId);
-        setDeleteError("This resume is no longer available.");
+        setPendingDelete(null);
+        setDeleteError(null);
+        setDeletionNotice("This resume is no longer available.");
         const refreshed = await loadHistory(0, false).catch(() => false);
         if (!refreshed) {
           setHistoryWarning("The list could not be refreshed.");
+        } else {
+          setHistoryWarning(null);
         }
         return;
       }
@@ -218,6 +223,21 @@ export function UploadPanel({
     } finally {
       deleteLock.current = false;
       setDeletePending(false);
+    }
+  }
+
+  async function retryHistory() {
+    if (historyRefreshLock.current) {
+      return;
+    }
+    historyRefreshLock.current = true;
+    try {
+      const refreshed = await loadHistory(0, false);
+      setHistoryWarning((current) => (refreshed ? null : current));
+    } catch {
+      setHistoryWarning((current) => current);
+    } finally {
+      historyRefreshLock.current = false;
     }
   }
 
@@ -628,7 +648,7 @@ export function UploadPanel({
       {historyWarning ? (
         <p className="rounded-xl border border-[#FDE68A] bg-[#FFFBEB] px-4 py-3 text-sm text-[#92400E]" role="alert">
           {historyWarning}
-          <button className="ml-3 font-semibold underline" onClick={() => void loadHistory(0, false).then((ok) => setHistoryWarning(ok ? null : historyWarning))} type="button">
+          <button className="ml-3 font-semibold underline" onClick={() => void retryHistory()} type="button">
             Retry list
           </button>
         </p>

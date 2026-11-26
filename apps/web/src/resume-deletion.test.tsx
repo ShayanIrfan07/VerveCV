@@ -186,13 +186,6 @@ describe("resume deletion", () => {
     expect(onSessionExpired).toHaveBeenCalled();
     expect(document.body.textContent).toContain("Sign in again to delete this resume.");
 
-    status = 404;
-    await act(async () => {
-      buttonNamed(document.body, "Delete resume")?.click();
-    });
-    await flushAsync();
-    expect(document.body.textContent).toContain("This resume is no longer available.");
-
     status = 0;
     await act(async () => {
       buttonNamed(document.body, "Delete resume")?.click();
@@ -353,7 +346,7 @@ describe("resume deletion", () => {
     await flushAsync();
     expect(container.textContent).toContain("no longer available");
     expect(container.textContent).toContain("could not be refreshed");
-    expect(container.textContent).not.toContain("Delete Software_Engineer_Resume.pdf");
+    expect(buttonNamed(container, "Delete Software_Engineer_Resume.pdf")).toBeUndefined();
     cleanup();
   });
 
@@ -396,7 +389,7 @@ describe("resume deletion", () => {
       await Promise.resolve();
     });
     await flushAsync();
-    expect(container.textContent).not.toContain("Delete Software_Engineer_Resume.pdf");
+    expect(buttonNamed(container, "Delete Software_Engineer_Resume.pdf")).toBeUndefined();
     cleanup();
   });
 
@@ -423,12 +416,207 @@ describe("resume deletion", () => {
     );
     const { container, cleanup } = render(<UploadPanel user={USER} />);
     await flushAsync();
-    expect([...container.querySelectorAll("button")].filter((button) => button.textContent?.includes("Software_Engineer_Resume.pdf")).length).toBeGreaterThan(1);
+    expect([...container.querySelectorAll("button")].filter((button) => button.getAttribute("aria-label") === "Delete Software_Engineer_Resume.pdf").length).toBe(2);
     buttonNamed(container, "Delete Software_Engineer_Resume.pdf")?.click();
     await flushAsync();
     buttonNamed(container, "Delete resume")?.click();
     await flushAsync();
-    expect(container.textContent).not.toContain("Delete Software_Engineer_Resume.pdf");
+    expect(buttonNamed(container, "Delete Software_Engineer_Resume.pdf")).toBeUndefined();
+    cleanup();
+  });
+
+  it("keeps the history warning when retry hits a network error and clears it after a later success", async () => {
+    let deleted = false;
+    let listAttempts = 0;
+    let listMode: "fail" | "reject" | "ok" = "fail";
+    let releaseList: (() => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const method = init?.method ?? "GET";
+        if (url === "/api/v1/resumes/resume-1" && method === "DELETE") {
+          deleted = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url.startsWith("/api/v1/evaluations?")) {
+          if (!deleted) {
+            return json({
+              evaluations: [FIRST],
+              pagination: { limit: 20, offset: 0, hasMore: false, nextOffset: null },
+            });
+          }
+          listAttempts += 1;
+          if (listMode === "reject") {
+            throw new TypeError("network down");
+          }
+          if (listMode === "fail") {
+            return new Response(null, { status: 500 });
+          }
+          await new Promise<void>((resolve) => {
+            releaseList = resolve;
+          });
+          return json({
+            evaluations: [FIRST, SECOND],
+            pagination: { limit: 20, offset: 0, hasMore: false, nextOffset: null },
+          });
+        }
+        return new Response(null, { status: 404 });
+      }),
+    );
+    const { container, cleanup } = render(<UploadPanel user={USER} />);
+    await flushAsync();
+    buttonNamed(container, "Delete Software_Engineer_Resume.pdf")?.click();
+    await flushAsync();
+    buttonNamed(container, "Delete resume")?.click();
+    await flushAsync();
+    expect(container.textContent).toContain("could not be refreshed");
+
+    listMode = "reject";
+    buttonNamed(container, "Retry list")?.click();
+    await flushAsync();
+    expect(container.textContent).toContain("could not be refreshed");
+    expect(buttonNamed(container, "Delete Software_Engineer_Resume.pdf")).toBeUndefined();
+
+    listMode = "ok";
+    buttonNamed(container, "Retry list")?.click();
+    buttonNamed(container, "Retry list")?.click();
+    await flushAsync();
+    expect(listAttempts).toBe(3);
+    await act(async () => {
+      releaseList?.();
+    });
+    await flushAsync();
+    expect(container.textContent).not.toContain("could not be refreshed");
+    expect(buttonNamed(container, "Delete Software_Engineer_Resume.pdf")).toBeUndefined();
+    expect(container.textContent).toContain("Backend_Developer_Resume.pdf");
+    cleanup();
+  });
+
+  it("closes the dialog on HTTP 404 and restores focus without claiming deletion", async () => {
+    let removed = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const method = init?.method ?? "GET";
+        if (url === "/api/v1/resumes/resume-1" && method === "DELETE") {
+          removed = true;
+          return json({ error: { code: "NOT_FOUND", message: "Not found" } }, 404);
+        }
+        return json({
+          evaluations: removed ? [] : [FIRST],
+          pagination: { limit: 20, offset: 0, hasMore: false, nextOffset: null },
+        });
+      }),
+    );
+    const { container, cleanup } = render(<UploadPanel user={USER} />);
+    await flushAsync();
+    const opener = buttonNamed(container, "Delete Software_Engineer_Resume.pdf");
+    opener?.focus();
+    opener?.click();
+    await flushAsync();
+    buttonNamed(document.body, "Delete resume")?.click();
+    await flushAsync();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).toContain("This resume is no longer available.");
+    expect(container.textContent).not.toContain("Deletion requested.");
+    expect(buttonNamed(container, "Delete Software_Engineer_Resume.pdf")).toBeUndefined();
+    expect(document.activeElement).toBe(document.getElementById("deletion-notice"));
+    cleanup();
+  });
+
+  it("ignores a delayed evaluation and preview after the resume is deleted", async () => {
+    const removed = new Set<string>();
+    let releaseEval: (value: Response) => void = () => undefined;
+    let releaseView: (value: Response) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const method = init?.method ?? "GET";
+        if (url === "/api/v1/evaluations/eval-1") {
+          return new Promise<Response>((resolve) => {
+            releaseEval = resolve;
+          });
+        }
+        if (url === "/api/v1/evaluations/eval-2") {
+          return json({
+            evaluation: {
+              ...SECOND,
+              notice: "VISIBLE_EVAL",
+              areas: [],
+              unavailable: [],
+            },
+            findings: [],
+          });
+        }
+        if (url.includes("/view-url")) {
+          return new Promise<Response>((resolve) => {
+            releaseView = resolve;
+          });
+        }
+        if (url === "https://files.example/resume.pdf") {
+          return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
+        }
+        if (method === "DELETE" && url === "/api/v1/resumes/resume-1") {
+          removed.add("resume-1");
+          return new Response(null, { status: 204 });
+        }
+        if (method === "DELETE" && url === "/api/v1/resumes/resume-2") {
+          removed.add("resume-2");
+          return new Response(null, { status: 204 });
+        }
+        if (url.startsWith("/api/v1/evaluations?")) {
+          return json({
+            evaluations: [FIRST, SECOND].filter((item) => !removed.has(item.resumeId)),
+            pagination: { limit: 20, offset: 0, hasMore: false, nextOffset: null },
+          });
+        }
+        return new Response(null, { status: 404 });
+      }),
+    );
+    const { container, cleanup } = render(<UploadPanel user={USER} />);
+    await flushAsync();
+    [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Software_Engineer_Resume.pdf"))?.click();
+    await flushAsync();
+    buttonNamed(container, "Delete Software_Engineer_Resume.pdf")?.click();
+    await flushAsync();
+    buttonNamed(container, "Delete resume")?.click();
+    await flushAsync();
+    await act(async () => {
+      releaseEval(
+        json({
+          evaluation: {
+            ...FIRST,
+            notice: "LATE_EVAL_MARKER",
+            areas: [],
+            unavailable: [],
+          },
+          findings: [],
+        }),
+      );
+      await Promise.resolve();
+    });
+    await flushAsync();
+    expect(container.textContent).not.toContain("LATE_EVAL_MARKER");
+    expect(container.textContent).not.toContain("Resume evaluation");
+
+    [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Backend_Developer_Resume.pdf"))?.click();
+    await flushAsync();
+    expect(container.textContent).toContain("Resume evaluation");
+    buttonNamed(container, "Delete Backend_Developer_Resume.pdf")?.click();
+    await flushAsync();
+    buttonNamed(container, "Delete resume")?.click();
+    await flushAsync();
+    await act(async () => {
+      releaseView(json({ url: "https://files.example/resume.pdf" }));
+      await Promise.resolve();
+    });
+    await flushAsync();
+    expect(container.textContent).not.toContain("Resume evaluation");
+    expect(container.textContent).not.toContain("VISIBLE_EVAL");
+    expect(buttonNamed(container, "Delete Backend_Developer_Resume.pdf")).toBeUndefined();
     cleanup();
   });
 
