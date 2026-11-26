@@ -458,6 +458,8 @@ describe("UploadPanel state resets, failed uploads, and historical evaluation ma
 
     expect(container.textContent).toContain('Possible misspelling "Recieve".');
     expect(container.querySelector('[data-testid="analysis-score"]')?.textContent).toBe("5");
+    expect(container.innerHTML).toContain("lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]");
+    expect(container.querySelector("details")?.hasAttribute("open")).toBe(false);
     expect(container.textContent).not.toContain("5/44");
     expect(container.textContent).not.toContain("OPEN_DECISION");
 

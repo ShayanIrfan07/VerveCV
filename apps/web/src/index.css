@@ -40,6 +40,35 @@ select option {
   outline-offset: 2px;
 }
 
+.auth-stage {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  background: #faf8ff;
+}
+
+.auth-stage__glow {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(48px);
+  pointer-events: none;
+}
+
+.auth-card {
+  width: min(440px, calc(100% - 2rem));
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(24px);
+  box-shadow: 0 12px 40px rgba(23, 23, 43, 0.08);
+  padding: 28px 20px;
+}
+
+@media (min-width: 640px) {
+  .auth-card {
+    padding: 40px;
+  }
+}
+
 details:not([open]) > :not(summary) {
   display: none;
 }

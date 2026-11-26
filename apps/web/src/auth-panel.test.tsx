@@ -264,5 +264,41 @@ describe("session persistence", () => {
     expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/api/v1/auth/logout"))).toBe(true);
     expect(container.textContent).toContain("Sign in");
     expect(container.textContent).not.toContain("ada@example.com");
+    expect(container.querySelector(".auth-card")).not.toBeNull();
+    expect(container.textContent).not.toContain("Analyze my resume");
+    expect(localStorage.length).toBe(0);
+  });
+
+  it("shows sign-in after an unauthenticated session check without a marketing page", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(401, { error: { message: "Unauthorized" } })));
+    await act(async () => {
+      root.render(<App />);
+    });
+    expect(container.textContent).toContain("Sign in");
+    expect(container.textContent).not.toContain("Analyze my resume");
+    expect(container.querySelector("input[autocomplete='current-password']")).not.toBeNull();
+  });
+
+  it("returns to sign-in when a signed-in request expires", async () => {
+    let signedIn = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/v1/me") {
+          return signedIn ? jsonResponse(200, { user: USER }) : jsonResponse(401, { error: { message: "Unauthorized" } });
+        }
+        if (url.startsWith("/api/v1/evaluations")) {
+          signedIn = false;
+          return jsonResponse(401, { error: { message: "Unauthorized" } });
+        }
+        return jsonResponse(404, { error: { message: "Not found" } });
+      }),
+    );
+    await act(async () => {
+      root.render(<App />);
+    });
+    expect(container.textContent).toContain("Sign in");
+    expect(container.textContent).not.toContain("ada@example.com");
   });
 });

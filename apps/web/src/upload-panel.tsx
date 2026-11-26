@@ -52,13 +52,22 @@ export function UploadPanel({
   focus,
   onEvaluationActive,
   onNewAnalysis,
+  onSessionExpired,
 }: {
   user: SessionUser | null;
   extractDocument?: LocalExtractor;
   focus?: "dashboard" | "analyze" | "history";
   onEvaluationActive?: (active: boolean) => void;
   onNewAnalysis?: () => void;
+  onSessionExpired?: () => void;
 }) {
+  async function authed<T>(path: string, init: RequestInit = {}) {
+    const result = await apiRequest<T>(path, init);
+    if (result.status === 401) {
+      sessionExpiredRef.current?.();
+    }
+    return result;
+  }
   const [status, setStatus] = useState(
     "Choose a PDF or DOCX file. The preview is extracted in your browser.",
   );
@@ -82,6 +91,8 @@ export function UploadPanel({
 
   // Monotonic operation token prevents late async completions from overwriting newer file selections or history views.
   const operationSeqRef = useRef(0);
+  const sessionExpiredRef = useRef(onSessionExpired);
+  sessionExpiredRef.current = onSessionExpired;
   // Session-local cache of verified version previews so reopening a historical score restores the exact version without network round-trips when already loaded.
   const versionPreviewCacheRef = useRef(
     new Map<string, { document: ResumeDocument; bytes: Uint8Array }>(),
@@ -182,7 +193,7 @@ export function UploadPanel({
   ) {
     let intent: Awaited<ReturnType<typeof apiRequest<UploadIntentResponse>>>;
     try {
-      intent = await apiRequest<UploadIntentResponse>("/api/v1/resumes/upload-intents", {
+      intent = await authed<UploadIntentResponse>("/api/v1/resumes/upload-intents", {
         method: "POST",
         body: JSON.stringify({ filename, mimeType, sizeBytes: data.byteLength }),
       });
@@ -229,7 +240,7 @@ export function UploadPanel({
 
     let completed: Awaited<ReturnType<typeof apiRequest<CompleteResponse>>>;
     try {
-      completed = await apiRequest<CompleteResponse>(
+      completed = await authed<CompleteResponse>(
         `/api/v1/resumes/${intent.body.resumeId}/versions/${intent.body.versionId}/complete-upload`,
         { method: "POST", body: JSON.stringify({}) },
       );
@@ -276,6 +287,9 @@ export function UploadPanel({
       evaluations: HistoryItem[];
       pagination?: HistoryPagination;
     }>(`/api/v1/evaluations?limit=${HISTORY_PAGE_SIZE}&offset=${offset}`);
+    if (listed.status === 401) {
+      sessionExpiredRef.current?.();
+    }
     if (listed.status === 200 && listed.body) {
       const nextItems = listed.body.evaluations;
       setHistory((prev) => (append ? [...prev, ...nextItems] : nextItems));
@@ -284,15 +298,17 @@ export function UploadPanel({
   }, []);
 
   useEffect(() => {
+    versionPreviewCacheRef.current.clear();
+    setHistory([]);
+    setHistoryPagination(null);
+    setVersionId(null);
+    setEvaluation(null);
+    setFindings([]);
+    setHighlight(null);
+    setPreviewUnavailableReason(null);
+    setPreviewSession(null);
+    setSelectedFile(null);
     if (!user) {
-      versionPreviewCacheRef.current.clear();
-      setHistory([]);
-      setHistoryPagination(null);
-      setVersionId(null);
-      setEvaluation(null);
-      setFindings([]);
-      setHighlight(null);
-      setPreviewUnavailableReason(null);
       return;
     }
     void loadHistory(0, false);
@@ -305,7 +321,7 @@ export function UploadPanel({
     const seq = operationSeqRef.current;
     const targetVersionId = versionId;
     const idempotencyKey = crypto.randomUUID();
-    const result = await apiRequest<{
+    const result = await authed<{
       evaluation: ScoreView;
       findings: ScoreFinding[];
       error?: { message: string };
@@ -340,7 +356,7 @@ export function UploadPanel({
     setHighlight(null);
     setPreviewUnavailableReason(null);
 
-    const result = await apiRequest<{
+    const result = await authed<{
       evaluation: ScoreView;
       findings: ScoreFinding[];
       error?: { message: string };
@@ -403,7 +419,7 @@ export function UploadPanel({
     }
 
     try {
-      const viewResp = await apiRequest<{ url?: string }>(
+      const viewResp = await authed<{ url?: string }>(
         `/api/v1/resumes/${loadedEval.resumeId}/versions/${targetVersionId}/view-url`,
       );
       if (operationSeqRef.current !== seq) {

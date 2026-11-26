@@ -90,7 +90,7 @@ export function AppShell({
         </div>
         <nav
           aria-label="Workspace"
-          className={`${open ? "block" : "hidden"} px-3 pb-4 lg:block`}
+          className={`${open ? "block" : "max-lg:hidden"} px-3 pb-4`}
           id={navId}
         >
           {(["Workspace", "Account"] as const).map((group) => (
@@ -112,7 +112,7 @@ export function AppShell({
           ))}
           <div className="mt-4 rounded-xl bg-hero p-4 text-sm text-[#21143D]">
             <p className="font-semibold">Free plan</p>
-            <p className="mt-1 text-[#6B5C85]">Pricing and quotas are not approved yet.</p>
+            <p className="mt-1 text-[#6B5C85]">Pro is not available.</p>
             <button className="mt-3 font-semibold text-primary" onClick={() => choose("pricing")} type="button">
               View plans
             </button>

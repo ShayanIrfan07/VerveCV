@@ -1,11 +1,18 @@
 import { expect, test } from "@playwright/test";
+import { routeSignedIn } from "./session";
 
 test("sample PDF preview keeps section layout and does not outline the first block", async ({ page }, testInfo) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => {
     pageErrors.push(error.message);
   });
+  await routeSignedIn(page);
   await page.goto("/");
+  const menu = page.getByRole("button", { name: "Menu" });
+  if (await menu.isVisible()) {
+    await menu.click();
+  }
+  await page.getByRole("button", { name: "New analysis" }).click();
   await page.getByRole("button", { name: "Preview sample PDF" }).click();
   await expect(page.getByRole("heading", { name: "Resume preview" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Extracted text" })).toBeHidden();

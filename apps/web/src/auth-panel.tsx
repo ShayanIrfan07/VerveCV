@@ -158,7 +158,7 @@ export function AuthPanel({ user, onUser, compact = false }: AuthPanelProps) {
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             type={showPassword ? "text" : "password"}
-            autoComplete="current-password"
+            autoComplete={displayName.trim().length > 0 ? "new-password" : "current-password"}
             minLength={8}
             required
           />
