@@ -1,0 +1,16 @@
+warning: in the working copy of 'apps/web/src/App.tsx', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx[m
+[1mindex f6343ef..7f12172 100644[m
+[1m--- a/apps/web/src/App.tsx[m
+[1m+++ b/apps/web/src/App.tsx[m
+[36m@@ -1,4 +1,4 @@[m
+[31m-﻿import { useCallback, useEffect, useState } from "react";[m
+[32m+[m[32mimport { useCallback, useEffect, useState } from "react";[m
+ import { apiRequest, type SessionUser } from "./api";[m
+ import { AuthPanel } from "./auth-panel";[m
+ import { AppShell, PageHeader, type WorkspaceSection } from "./shell";[m
+[36m@@ -182,4 +182,3 @@[m [mfunction Settings({ user }: { user: SessionUser }) {[m
+     </section>[m
+   );[m
+ }[m
+[31m-[m

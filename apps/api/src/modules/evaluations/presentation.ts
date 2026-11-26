@@ -86,23 +86,27 @@ const LABELS: Record<string, string> = {
   "unique-skills": "Unique skills",
 };
 
+const CHECK_UNAVAILABLE = "This check is not yet available.";
+const CRITERION_UNEVALUATED = "This criterion has not been evaluated.";
+const SUGGESTIONS_UNEVALUATED = "Suggestions may appear below. This criterion has not been evaluated.";
+
 const UNAVAILABLE_EXPLANATIONS: Record<string, string> = {
-  "action-verbs": "Action-verb scoring is not available yet. The approved verb list is still undecided.",
-  "bullet-length": "Bullet-length scoring is not available yet. The measurement rules are still undecided.",
-  "education-details": "Education details are not available yet. Partial credit has not been approved.",
-  "entry-details": "Role and project details are not available yet. Partial credit has not been approved.",
-  "formatting-consistency": "Formatting consistency is not available yet. The counting rules are still undecided.",
-  "grammar-and-spelling": "Spelling and grammar notes may appear as suggestions. Their points are not available yet.",
-  "impact-metrics": "Impact scoring is not available yet. The classifier is still undecided.",
-  "industry-keywords": "Industry keyword scoring is not available yet. The role dictionaries are still undecided.",
-  "minimum-bullets-per-role": "Bullets-per-role scoring is not available yet. The role recognizer is still undecided.",
-  punctuation: "Punctuation notes may appear as suggestions. Their points are not available yet.",
-  "quantified-metrics": "Quantified-metric scoring is not available yet. The recognizer is still undecided.",
-  readability: "Readability is not available yet because no scoring method has been approved.",
-  "reverse-chronology": "Date order is not available yet. How dates combine across sections is still undecided.",
-  "section-ordering": "Section order is not available yet. The acceptable orders are still undecided.",
-  "skills-ratio": "The technical-to-soft skills ratio is not available yet. The classification list has not been approved.",
-  "unique-skills": "Unique-skill scoring is not available for this skill count. The approved band does not name it.",
+  "action-verbs": CHECK_UNAVAILABLE,
+  "bullet-length": CHECK_UNAVAILABLE,
+  "education-details": CRITERION_UNEVALUATED,
+  "entry-details": CRITERION_UNEVALUATED,
+  "formatting-consistency": SUGGESTIONS_UNEVALUATED,
+  "grammar-and-spelling": SUGGESTIONS_UNEVALUATED,
+  "impact-metrics": CHECK_UNAVAILABLE,
+  "industry-keywords": CHECK_UNAVAILABLE,
+  "minimum-bullets-per-role": CHECK_UNAVAILABLE,
+  punctuation: SUGGESTIONS_UNEVALUATED,
+  "quantified-metrics": CHECK_UNAVAILABLE,
+  readability: CHECK_UNAVAILABLE,
+  "reverse-chronology": CHECK_UNAVAILABLE,
+  "section-ordering": CHECK_UNAVAILABLE,
+  "skills-ratio": CHECK_UNAVAILABLE,
+  "unique-skills": CRITERION_UNEVALUATED,
 };
 
 const PROVISIONAL_NOTICE = "This result is provisional and is not a complete 100-point score.";
@@ -127,7 +131,7 @@ export function presentEvaluation(input: {
   if (input.jdMatch !== null && input.jdMatch !== undefined) {
     unavailable.push({
       label: "Job description comparison",
-      explanation: "The description was received. Comparison is not available yet and does not change this score.",
+      explanation: "Job description comparison is not available yet and does not change this score.",
     });
   }
   return {
@@ -216,18 +220,18 @@ function labelFor(ruleId: string): string {
 
 function explanationFor(criterion: StoredCriterion): string {
   if (criterion.ruleId === "resume-filename" && criterion.reasonCode === "UNRESOLVED_BAND") {
-    return "The filename contains the candidate name, but it does not match an approved pattern, so these points are not available.";
+    return "The filename includes a name, but this criterion has not been evaluated.";
   }
   if (criterion.ruleId === "resume-filename" && criterion.reasonCode === "OPEN_DECISION") {
-    return "Filename scoring is not available because no candidate name could be compared.";
+    return CHECK_UNAVAILABLE;
   }
   if (criterion.ruleId === "required-sections" && criterion.reasonCode === "MISSING_CANDIDATE_TYPE") {
-    return "Required sections are not available until Fresher or Experienced is selected.";
+    return "Select Fresher or Experienced before this check can run.";
   }
   if (criterion.reasonCode === "DICTIONARY_UNAVAILABLE") {
-    return "Spelling could not be checked because the dictionary is unavailable, so these points are not available.";
+    return "Spelling could not be checked, so this criterion has not been evaluated.";
   }
-  return UNAVAILABLE_EXPLANATIONS[criterion.ruleId] ?? "This check is not available yet and is not included in the score.";
+  return UNAVAILABLE_EXPLANATIONS[criterion.ruleId] ?? CHECK_UNAVAILABLE;
 }
 
 function findingKind(ruleId: string, scored: readonly StoredCriterion[]): "issue" | "note" | null {

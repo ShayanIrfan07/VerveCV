@@ -8,6 +8,7 @@ test("sample PDF preview keeps section layout and does not outline the first blo
   });
   await routeSignedIn(page);
   await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Welcome back, Ada.", exact: true })).toBeVisible();
   const menu = page.getByRole("button", { name: "Menu" });
   if (await menu.isVisible()) {
     await menu.click();
