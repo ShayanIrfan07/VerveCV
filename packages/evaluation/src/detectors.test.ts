@@ -256,9 +256,3 @@ describe("phase 4 detectors", () => {
     expect(JSON.stringify(result)).not.toContain(DETECTOR_VERSION);
   });
 });
-      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
-      434       1     434       1492  cons0     197609 18:40:26 /usr/bin/bash
-      480     434     480       1016  cons0     197609 18:40:31 /usr/bin/PS
-      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND
-      511     434     511      25968  cons0     197609 18:40:51 /usr/bin/PS
-      434       1     434       1492  cons0     197609 18:40:26 /usr/bin/bash
