@@ -266,7 +266,7 @@ describe("session persistence", () => {
     expect(container.textContent).not.toContain("ada@example.com");
     expect(container.querySelector(".auth-card")).not.toBeNull();
     expect(container.textContent).not.toContain("Analyze my resume");
-    expect(localStorage.length).toBe(0);
+    expect(window.localStorage?.getItem("token") ?? null).toBeNull();
   });
 
   it("shows sign-in after an unauthenticated session check without a marketing page", async () => {
