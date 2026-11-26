@@ -7,6 +7,9 @@ test("sample PDF preview keeps section layout and does not outline the first blo
   });
   await page.goto("/");
   await page.getByRole("button", { name: "Preview sample PDF" }).click();
+  await expect(page.getByRole("heading", { name: "Resume preview" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Extracted text" })).toBeHidden();
+  await page.getByText("Show extracted text").click();
   await expect(page.getByRole("heading", { name: "Extracted text" })).toBeVisible();
   await expect(page.getByTestId("pdf-highlight-box")).toHaveCount(0);
 

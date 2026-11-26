@@ -261,6 +261,9 @@ describe("PreviewView UTF-16 offset highlights and PDF fallbacks", () => {
       );
     });
 
+    expect(container.querySelector("details")?.open).toBe(false);
+    expect(container.textContent).toContain("Show extracted text");
+    expect(container.textContent).toContain("Fit width");
     expect(container.querySelector('[data-testid="pdf-highlight-box"]')).toBeNull();
     expect(container.querySelector('[data-testid="utf16-highlight-mark"]')).toBeNull();
     const nameButton = container.querySelector('[data-block-id="block-0"]');

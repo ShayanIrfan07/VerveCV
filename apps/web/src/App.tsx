@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiRequest, type SessionUser } from "./api";
 import { AuthPanel } from "./auth-panel";
 import { AppShell, MarketingHeader, PageHeader, type WorkspaceSection } from "./shell";
@@ -11,6 +11,11 @@ export default function App() {
   const [user, setUser] = useState<SessionUser | null>(null);
   const [publicView, setPublicView] = useState<PublicView>("home");
   const [section, setSection] = useState<WorkspaceSection>("dashboard");
+  const [resultsActive, setResultsActive] = useState(false);
+  const reportResults = useCallback((active: boolean) => {
+    setResultsActive(active);
+  }, []);
+  const workspace = section === "dashboard" || section === "analyze" || section === "history";
 
   useEffect(() => {
     let cancelled = false;
@@ -32,12 +37,18 @@ export default function App() {
         account={<AuthPanel compact onUser={setUser} user={user} />}
         onSection={setSection}
         section={section}
+        sidebar={!resultsActive || !workspace}
       >
-        <main className="mx-auto w-full max-w-[1280px] px-4 py-6 sm:px-6 lg:px-8">
+        <main className={resultsActive && workspace ? "w-full min-w-0" : "w-full min-w-0 px-4 py-6 sm:px-6"}>
           {section === "pricing" ? <Pricing signedIn /> : null}
           {section === "settings" ? <Settings user={user} /> : null}
           <div className={section === "dashboard" || section === "analyze" || section === "history" ? "" : "hidden"}>
-            <UploadPanel focus={section === "pricing" || section === "settings" ? "dashboard" : section} user={user} />
+            <UploadPanel
+              focus={section === "pricing" || section === "settings" ? "dashboard" : section}
+              onEvaluationActive={reportResults}
+              onNewAnalysis={() => setSection("analyze")}
+              user={user}
+            />
           </div>
         </main>
       </AppShell>

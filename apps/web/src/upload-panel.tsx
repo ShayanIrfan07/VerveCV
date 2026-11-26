@@ -2,8 +2,11 @@ import { sampleDocxBytes, samplePdfBytes, type ResumeDocument } from "@vervecv/d
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiRequest, type SessionUser } from "./api";
 import { PreviewView } from "./preview-view";
+import { Brand } from "./shell";
 import { card, field, primaryButton, secondaryButton } from "./ui";
 import {
+  EvaluationInsights,
+  EvaluationOverview,
   HistoryList,
   ScorePanel,
   type EvidenceLocator,
@@ -47,10 +50,14 @@ export function UploadPanel({
   user,
   extractDocument = extractLocally,
   focus,
+  onEvaluationActive,
+  onNewAnalysis,
 }: {
   user: SessionUser | null;
   extractDocument?: LocalExtractor;
   focus?: "dashboard" | "analyze" | "history";
+  onEvaluationActive?: (active: boolean) => void;
+  onNewAnalysis?: () => void;
 }) {
   const [status, setStatus] = useState(
     "Choose a PDF or DOCX file. The preview is extracted in your browser.",
@@ -67,6 +74,11 @@ export function UploadPanel({
   const [highlight, setHighlight] = useState<EvidenceLocator | null>(null);
   const [selectedFile, setSelectedFile] = useState<{ name: string; bytes: number } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [mobilePane, setMobilePane] = useState<"resume" | "feedback">("feedback");
+
+  useEffect(() => {
+    onEvaluationActive?.(evaluation !== null && user !== null);
+  }, [evaluation, onEvaluationActive, user]);
 
   // Monotonic operation token prevents late async completions from overwriting newer file selections or history views.
   const operationSeqRef = useRef(0);
@@ -469,6 +481,67 @@ export function UploadPanel({
 
   return (
     <section className="grid min-w-0 gap-5">
+      {evaluation && user ? (
+      <div className="min-h-screen bg-[#F8F9FC] text-[#334155]">
+        <header className="flex h-16 items-center justify-between border-b border-[#E2E8F0] bg-white px-6">
+          <Brand />
+          <button
+            className="inline-flex min-h-11 items-center rounded-full bg-[#7C3AED] px-4 text-sm font-semibold text-white hover:bg-[#6D28D9]"
+            onClick={() => {
+              resetActiveResumeState();
+              onNewAnalysis?.();
+            }}
+            type="button"
+          >
+            + New analysis
+          </button>
+        </header>
+        <div className="px-6 py-6">
+          <h1 className="text-2xl font-semibold text-[#17172B]">Resume evaluation</h1>
+          <p className="mt-1 text-sm leading-6 text-[#334155]">Understand your weaknesses. Build a stronger resume.</p>
+          <div className="mt-4">
+            <EvaluationOverview evaluation={evaluation} />
+          </div>
+          <div className="mt-4 flex gap-2 lg:hidden">
+            <button
+              className={`min-h-11 flex-1 rounded-lg text-sm font-semibold ${mobilePane === "resume" ? "bg-[#7C3AED] text-white" : "bg-[#EDE9FE] text-[#6D28D9]"}`}
+              onClick={() => setMobilePane("resume")}
+              type="button"
+            >
+              Resume
+            </button>
+            <button
+              className={`min-h-11 flex-1 rounded-lg text-sm font-semibold ${mobilePane === "feedback" ? "bg-[#7C3AED] text-white" : "bg-[#EDE9FE] text-[#6D28D9]"}`}
+              onClick={() => setMobilePane("feedback")}
+              type="button"
+            >
+              Feedback
+            </button>
+          </div>
+          <div className="mt-4 grid w-full min-w-0 grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            <div className={`${mobilePane === "resume" ? "block" : "hidden"} min-w-0 lg:block lg:max-h-[calc(100vh-12rem)] lg:overflow-auto`} id="resume-preview">
+              {visiblePreview ? (
+                <PreviewView document={visiblePreview.document} fileBytes={visiblePreview.bytes} highlight={highlight} showExtractedText={false} />
+              ) : (
+                <p className="rounded-xl border border-[#E2E8F0] bg-white p-4 text-sm text-[#64748B]">
+                  {previewUnavailableReason ?? "The resume preview is not available for this result."}
+                </p>
+              )}
+            </div>
+            <div className={`${mobilePane === "feedback" ? "block" : "hidden"} min-w-0 lg:block lg:max-h-[calc(100vh-12rem)] lg:overflow-auto`}>
+              <EvaluationInsights
+                activeHighlight={highlight}
+                evaluation={evaluation}
+                findings={findings}
+                onHighlight={setHighlight}
+                previewUnavailableReason={previewUnavailableReason}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+      ) : null}
+      <div className={evaluation && user ? "hidden" : "contents"}>
       {showDashboard && user ? (
         <div className="grid gap-5">
           <header>
@@ -613,9 +686,19 @@ export function UploadPanel({
       ) : null}
 
       {showAnalyze && (evaluation || visiblePreview) ? (
-        <div className="grid min-w-0 gap-5 lg:grid-cols-2">
+        <div
+          className={`grid w-full min-w-0 items-start gap-6 ${
+            evaluation && visiblePreview ? "lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]" : ""
+          }`}
+        >
+          {evaluation ? (
+            <div className="order-1 min-w-0 lg:col-start-1 lg:row-start-1 lg:max-w-none">
+              <h2 className="text-2xl font-semibold text-ink">Resume evaluation</h2>
+              <p className="mt-1 text-sm leading-6 text-body">Understand your weaknesses. Build a stronger resume.</p>
+            </div>
+          ) : null}
           {visiblePreview ? (
-            <div className="order-2 min-w-0 lg:order-1" id="resume-preview">
+            <div className="order-3 min-w-0 lg:order-none lg:col-start-1 lg:row-start-2 lg:max-h-[calc(100vh-8rem)] lg:overflow-auto" id="resume-preview">
               <PreviewView
                 document={visiblePreview.document}
                 fileBytes={visiblePreview.bytes}
@@ -624,7 +707,7 @@ export function UploadPanel({
             </div>
           ) : null}
           {evaluation ? (
-            <div className="order-1 min-w-0 lg:order-2">
+            <div className="order-2 min-w-0 lg:order-none lg:col-start-2 lg:row-span-2 lg:max-h-[calc(100vh-8rem)] lg:overflow-auto">
               <ScorePanel
                 activeHighlight={highlight}
                 evaluation={evaluation}
@@ -653,6 +736,7 @@ export function UploadPanel({
           onOpen={(item) => void openHistory(item)}
         />
       ) : null}
+      </div>
     </section>
   );
 }

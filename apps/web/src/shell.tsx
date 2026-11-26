@@ -58,11 +58,13 @@ export function AppShell({
   onSection,
   account,
   children,
+  sidebar = true,
 }: {
   section: WorkspaceSection;
   onSection: (section: WorkspaceSection) => void;
   account: ReactNode;
   children: ReactNode;
+  sidebar?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const navId = useId();
@@ -72,8 +74,8 @@ export function AppShell({
   };
 
   return (
-    <div className="min-h-screen bg-canvas lg:grid lg:grid-cols-[240px_minmax(0,1fr)]">
-      <aside className="border-b border-line bg-card lg:min-h-screen lg:border-b-0 lg:border-r">
+    <div className={sidebar ? "min-h-screen bg-canvas lg:grid lg:grid-cols-[240px_minmax(0,1fr)]" : "min-h-screen bg-canvas"}>
+      {sidebar ? <aside className="border-b border-line bg-card lg:min-h-screen lg:border-b-0 lg:border-r">
         <div className="flex items-center justify-between px-4 py-4 lg:px-5">
           <Brand />
           <button
@@ -117,7 +119,7 @@ export function AppShell({
           </div>
           <div className="mt-4">{account}</div>
         </nav>
-      </aside>
+      </aside> : null}
       <div className="min-w-0">{children}</div>
     </div>
   );
